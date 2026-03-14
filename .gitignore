@@ -1,54 +1,95 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
-
-# Distribution / packaging
+*.so
+.Python
 build/
+develop-eggs/
 dist/
-*.egg-info/
+downloads/
+eggs/
 .eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
 # Virtual environments
-.venv/
 venv/
 env/
-
-# Environment variables
-.env
-.env.*
-!.env.example
-
-# Python tools caches
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-
-# Jupyter
-.ipynb_checkpoints/
-
-# Logs
-*.log
-logs/
-
-# Local data / artifacts
-data/raw/*
-data/processed/*
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-
-# Models / weights / temporary files
-ml/models/checkpoints/
-ml/models/artifacts/
-tmp/
-temp/
+ENV/
+env.bak/
+venv.bak/
+.venv
 
 # IDE
 .vscode/
 .idea/
-
-# OS files
+*.swp
+*.swo
+*~
 .DS_Store
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.hypothesis/
+*.cover
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Logging
+logs/
+*.log
+
+# Models and checkpoints
+models/ner_checkpoint/
+*.bin
+*.pt
+*.pth
+checkpoint-*/
+
+# Generated data
+data/raw
+data/processed/
+data/answer/
+results/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+.cache/
