@@ -251,8 +251,8 @@ data/processed/valid.jsonl
 
 bash
 python scripts/prepare_data.py \
-  --raw-train data/raw/train.csv \
-  --raw-valid data/raw/valid.csv \
+  --prepare-train data/raw/train.csv \
+  --prepare-test data/raw/valid.csv \
   --output-dir data/processed
 2. Обучение NER
 bash
