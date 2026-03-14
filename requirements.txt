@@ -1,23 +1,26 @@
-# Web/API
+# Core ML / NLP
+transformers==4.36.2
+datasets==2.16.1
+torch==2.1.2
+spacy==3.7.4
+seqeval==1.2.2
+
+# Web / API
 fastapi==0.115.0
 uvicorn[standard]==0.30.0
 
-# NER / NLP
-spacy==3.7.4
-# Модель скачаете отдельно командой:
-# python -m spacy download ru_core_news_md
-
-# Классический ML / utils (если будете что-то пробовать сверх spaCy)
-scikit-learn==1.5.1
-pandas==2.2.2
+# Data processing
 numpy==1.26.4
+pandas==2.2.2
+scikit-learn==1.5.1
 
-# Валидация и схемы
+# Validation
 pydantic==2.8.2
 
-# Тесты
-pytest==8.3.2
+# Utilities
+tqdm==4.66.1
 
-# Линтеры / форматтеры (опционально, можно убрать если времени мало)
+# Testing / development (optional)
+pytest==8.3.2
 black==24.8.0
 ruff==0.6.8
