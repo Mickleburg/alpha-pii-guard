@@ -11,6 +11,8 @@ import pandas as pd
 from transformers import AutoTokenizer
 from tqdm import tqdm
 
+from ml.config.labels import strip_bio
+
 random.seed(42)
 
 def parse_target_column(target_str: str) -> List[Tuple[int, int, str]]:
@@ -22,6 +24,13 @@ def parse_target_column(target_str: str) -> List[Tuple[int, int, str]]:
         return parsed if isinstance(parsed, list) else []
     except (ValueError, SyntaxError, TypeError):
         return []
+
+def normalize_spans(spans):
+    result = []
+    for start, end, label in spans:
+        result.append((int(start), int(end), strip_bio(label)))
+    return result
+
 
 def parse_entity_column(entity_str: str) -> List[str]:
     """Parse entity column for validation purposes."""
@@ -135,7 +144,7 @@ def main():
     
     # Parse target column
     print("Parsing target annotations...")
-    df['target_parsed'] = df['target'].apply(parse_target_column)
+    df['target_parsed'] = df['target'].apply(parse_target_column).apply(normalize_spans)
     
     # Filter out rows with valid text
     df = df[df['text'].notna()].copy()

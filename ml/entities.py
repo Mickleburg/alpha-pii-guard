@@ -7,7 +7,8 @@ Provides Entity dataclass and conversion utilities for regex, NER, and merged de
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 
-from ml.merge.label_map import normalize_label
+#from ml.merge.label_map import normalize_label
+from ml.config.labels import normalize_label, strip_bio
 
 
 @dataclass
@@ -33,7 +34,8 @@ class Entity:
     def __post_init__(self) -> None:
         """Validate and normalize entity after construction."""
         # Normalize label on construction
-        self.label = normalize_label(self.label)
+        #self.label = normalize_label(self.label)
+        self.label = strip_bio(self.label)
 
 
 def entity_to_tuple(entity: Entity) -> Tuple[int, int, str]:
