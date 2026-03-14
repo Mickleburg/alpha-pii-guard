@@ -105,10 +105,18 @@ python -m venv .venv
 source .venv/bin/activate
 ```
 
-Для Windows PowerShell:
+#### Для Windows PowerShell:
+
+Для текущего окна PowerShell можно временно ослабить политику командой
 
 ```powershell
-.venv\Scripts\Activate.ps1
+Set-ExecutionPolicy -Scope Process Bypass
+```
+
+Далее:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
 ```
 
 ### 3. Установить зависимости
