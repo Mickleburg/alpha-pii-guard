@@ -1,14 +1,4 @@
 # File: scripts/check_dataset.py
-"""
-Validate train_dataset.tsv for correctness.
-
-Checks:
-- Required columns exist
-- Entity parsing with ast.literal_eval
-- Tuple format validation
-- Span boundaries
-- Substring extraction
-"""
 import sys
 import ast
 from pathlib import Path
@@ -16,9 +6,21 @@ from typing import List, Tuple, Dict
 from collections import defaultdict
 import pandas as pd
 
-def parse_entity_safely(entity_str: str) -> List[Tuple[int, int, str]]:
+def parse_target_safely(target_str: str) -> List[Tuple[int, int, str]]:
+    """Parse target column safely."""
+    if pd.isna(target_str) or target_str == '[]' or target_str == '' or target_str == 'empty':
+        return []
+    try:
+        parsed = ast.literal_eval(target_str)
+        if not isinstance(parsed, list):
+            return None
+        return parsed
+    except (ValueError, SyntaxError, TypeError):
+        return None
+
+def parse_entity_safely(entity_str: str) -> List[str]:
     """Parse entity column safely."""
-    if pd.isna(entity_str) or entity_str == '[]' or entity_str == '':
+    if pd.isna(entity_str) or entity_str == 'empty' or entity_str == '[]' or entity_str == '':
         return []
     try:
         parsed = ast.literal_eval(entity_str)
@@ -28,15 +30,15 @@ def parse_entity_safely(entity_str: str) -> List[Tuple[int, int, str]]:
     except (ValueError, SyntaxError, TypeError):
         return None
 
-def validate_entity_tuple(entity_tuple) -> Tuple[bool, str]:
-    """Validate single entity tuple format."""
-    if not isinstance(entity_tuple, tuple):
+def validate_span_tuple(span_tuple) -> Tuple[bool, str]:
+    """Validate single span tuple format."""
+    if not isinstance(span_tuple, tuple):
         return False, "Not a tuple"
     
-    if len(entity_tuple) != 3:
-        return False, f"Expected 3 elements, got {len(entity_tuple)}"
+    if len(span_tuple) != 3:
+        return False, f"Expected 3 elements, got {len(span_tuple)}"
     
-    start, end, category = entity_tuple
+    start, end, category = span_tuple
     
     if not isinstance(start, int):
         return False, f"start is not int: {type(start)}"
@@ -87,7 +89,7 @@ def main():
     print(f"Total rows: {len(df)}")
     
     # Check required columns
-    required_columns = {'text', 'entity', 'entity_texts'}
+    required_columns = {'text', 'target', 'entity'}
     missing_columns = required_columns - set(df.columns)
     
     if missing_columns:
@@ -101,11 +103,12 @@ def main():
     stats = {
         'valid_rows': 0,
         'invalid_rows': 0,
-        'empty_entities': 0,
+        'empty_target': 0,
         'parse_errors': 0,
         'format_errors': 0,
         'bound_errors': 0,
-        'total_entities': 0,
+        'entity_mismatch': 0,
+        'total_spans': 0,
         'category_counts': defaultdict(int)
     }
     
@@ -114,6 +117,7 @@ def main():
     # Validate each row
     for idx, row in df.iterrows():
         text = row['text']
+        target_str = row['target']
         entity_str = row['entity']
         
         # Check text
@@ -122,58 +126,68 @@ def main():
             errors.append(f"Row {idx}: Empty or invalid text")
             continue
         
-        # Parse entities
-        entities = parse_entity_safely(entity_str)
+        # Parse target
+        spans = parse_target_safely(target_str)
         
-        if entities is None:
+        if spans is None:
             stats['parse_errors'] += 1
             stats['invalid_rows'] += 1
-            errors.append(f"Row {idx}: Failed to parse entity column")
+            errors.append(f"Row {idx}: Failed to parse target column")
             continue
         
-        if len(entities) == 0:
-            stats['empty_entities'] += 1
+        if len(spans) == 0:
+            stats['empty_target'] += 1
             stats['valid_rows'] += 1
             continue
         
-        # Validate each entity
+        # Validate each span
         row_valid = True
-        for ent_idx, entity in enumerate(entities):
+        extracted_values = []
+        
+        for span_idx, span in enumerate(spans):
             # Validate tuple format
-            is_valid, error_msg = validate_entity_tuple(entity)
+            is_valid, error_msg = validate_span_tuple(span)
             if not is_valid:
                 stats['format_errors'] += 1
-                errors.append(f"Row {idx}, Entity {ent_idx}: {error_msg}")
+                errors.append(f"Row {idx}, Span {span_idx}: {error_msg}")
                 row_valid = False
                 continue
             
-            start, end, category = entity
+            start, end, category = span
             
             # Validate bounds
             is_valid, error_msg = validate_span_bounds(text, start, end)
             if not is_valid:
                 stats['bound_errors'] += 1
-                errors.append(f"Row {idx}, Entity {ent_idx}: {error_msg}")
+                errors.append(f"Row {idx}, Span {span_idx}: {error_msg}")
                 row_valid = False
                 continue
             
-            # Extract and validate substring
+            # Extract substring
             try:
                 extracted = text[start:end]
                 if len(extracted) == 0:
                     stats['bound_errors'] += 1
-                    errors.append(f"Row {idx}, Entity {ent_idx}: Extracted empty substring")
+                    errors.append(f"Row {idx}, Span {span_idx}: Extracted empty substring")
                     row_valid = False
                     continue
+                extracted_values.append(extracted)
             except Exception as e:
                 stats['bound_errors'] += 1
-                errors.append(f"Row {idx}, Entity {ent_idx}: Failed to extract substring: {e}")
+                errors.append(f"Row {idx}, Span {span_idx}: Failed to extract substring: {e}")
                 row_valid = False
                 continue
             
             # Track category
             stats['category_counts'][category] += 1
-            stats['total_entities'] += 1
+            stats['total_spans'] += 1
+        
+        # Validate entity column if not empty
+        entity_list = parse_entity_safely(entity_str)
+        if entity_list is not None and len(entity_list) > 0 and len(extracted_values) > 0:
+            if len(entity_list) != len(extracted_values):
+                stats['entity_mismatch'] += 1
+                errors.append(f"Row {idx}: Entity count mismatch (target={len(extracted_values)}, entity={len(entity_list)})")
         
         if row_valid:
             stats['valid_rows'] += 1
@@ -186,17 +200,21 @@ def main():
     print("="*70)
     print(f"Valid rows:        {stats['valid_rows']:>6} ({stats['valid_rows']/len(df)*100:.1f}%)")
     print(f"Invalid rows:      {stats['invalid_rows']:>6} ({stats['invalid_rows']/len(df)*100:.1f}%)")
-    print(f"Empty entities:    {stats['empty_entities']:>6}")
+    print(f"Empty target:      {stats['empty_target']:>6}")
     print(f"Parse errors:      {stats['parse_errors']:>6}")
     print(f"Format errors:     {stats['format_errors']:>6}")
     print(f"Bound errors:      {stats['bound_errors']:>6}")
-    print(f"Total entities:    {stats['total_entities']:>6}")
+    print(f"Entity mismatch:   {stats['entity_mismatch']:>6}")
+    print(f"Total spans:       {stats['total_spans']:>6}")
     
     print("\n" + "-"*70)
-    print("CATEGORY DISTRIBUTION")
+    print("CATEGORY DISTRIBUTION (Top 30)")
     print("-"*70)
-    for category, count in sorted(stats['category_counts'].items(), key=lambda x: -x[1]):
-        print(f"  {category:<35} {count:>6}")
+    for category, count in sorted(stats['category_counts'].items(), key=lambda x: -x[1])[:30]:
+        print(f"  {category:<50} {count:>6}")
+    
+    if len(stats['category_counts']) > 30:
+        print(f"  ... and {len(stats['category_counts']) - 30} more categories")
     
     # Print errors (first 20)
     if errors:

@@ -1,5 +1,6 @@
 # File: ml/eval/eval_ner.py
 import json
+import argparse
 from pathlib import Path
 from typing import List, Tuple, Dict
 from collections import defaultdict
@@ -17,6 +18,10 @@ def load_test_data(test_path: Path) -> List[Dict]:
         for line in f:
             data.append(json.loads(line))
     return data
+
+def spans_to_tuples(spans: List[List]) -> List[Tuple[int, int, str]]:
+    """Convert list of lists to list of tuples."""
+    return [(s[0], s[1], s[2]) for s in spans]
 
 def compute_strict_match_metrics(
     predictions: List[List[Tuple[int, int, str]]],
@@ -99,10 +104,18 @@ def compute_strict_match_metrics(
     }
 
 def main():
-    # Paths
-    test_data_path = Path('data/processed/test_raw.jsonl')
-    model_dir = Path('ml/models/ner')
-    output_path = Path('docs/eval_results.json')
+    parser = argparse.ArgumentParser(description='Evaluate NER model')
+    parser.add_argument('--test_path', type=str, default='data/processed/test_raw.jsonl',
+                      help='Path to test data JSONL file')
+    parser.add_argument('--model_dir', type=str, default='ml/models/ner',
+                      help='Path to trained model directory')
+    parser.add_argument('--output', type=str, default='docs/eval_results.json',
+                      help='Output path for evaluation results JSON')
+    args = parser.parse_args()
+    
+    test_data_path = Path(args.test_path)
+    model_dir = Path(args.model_dir)
+    output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
     print("Loading test data...")
@@ -116,7 +129,7 @@ def main():
     # Run predictions
     print("\nRunning predictions...")
     texts = [item['text'] for item in test_data]
-    ground_truths = [item['entities'] for item in test_data]
+    ground_truths = [spans_to_tuples(item['spans']) for item in test_data]
     
     # Batch prediction for efficiency
     predictions = ner_model.predict_batch(texts)
@@ -139,14 +152,23 @@ def main():
     print(f"  False Negatives: {results['total_fn']}")
     
     print("\n" + "-"*60)
-    print("Per-category metrics:")
+    print("Per-category metrics (Top 20 by support):")
     print("-"*60)
-    print(f"{'Category':<30} {'Precision':>10} {'Recall':>10} {'F1':>10} {'Support':>10}")
+    print(f"{'Category':<40} {'Precision':>10} {'Recall':>10} {'F1':>10} {'Support':>10}")
     print("-"*60)
     
-    for category, metrics in sorted(results['category_metrics'].items(), key=lambda x: -x[1]['f1']):
-        print(f"{category:<30} {metrics['precision']:>10.4f} {metrics['recall']:>10.4f} "
+    sorted_categories = sorted(
+        results['category_metrics'].items(),
+        key=lambda x: -x[1]['support']
+    )
+    
+    for category, metrics in sorted_categories[:20]:
+        cat_display = category[:37] + '...' if len(category) > 40 else category
+        print(f"{cat_display:<40} {metrics['precision']:>10.4f} {metrics['recall']:>10.4f} "
               f"{metrics['f1']:>10.4f} {metrics['support']:>10}")
+    
+    if len(sorted_categories) > 20:
+        print(f"\n... and {len(sorted_categories) - 20} more categories")
     
     print("="*60)
     

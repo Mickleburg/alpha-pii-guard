@@ -3,6 +3,7 @@ import os
 import ast
 import json
 import random
+import argparse
 from pathlib import Path
 from typing import List, Dict, Tuple
 from collections import defaultdict
@@ -12,28 +13,34 @@ from tqdm import tqdm
 
 random.seed(42)
 
-# Category mapping
-CATEGORIES = [
-    "ФИО",
-    "Паспортные данные РФ",
-    "СНИЛС",
-    "ИНН",
-    "Дата рождения",
-    "Адрес",
-    "Номер телефона",
-    "Email",
-    "Банковские данные"
-]
+def parse_target_column(target_str: str) -> List[Tuple[int, int, str]]:
+    """Parse target column from string representation to list of tuples."""
+    if pd.isna(target_str) or target_str == '[]' or target_str == '' or target_str == 'empty':
+        return []
+    try:
+        parsed = ast.literal_eval(target_str)
+        return parsed if isinstance(parsed, list) else []
+    except (ValueError, SyntaxError, TypeError):
+        return []
 
-def parse_entity_column(entity_str: str) -> List[Tuple[int, int, str]]:
-    """Parse entity column from string representation to list of tuples."""
-    if pd.isna(entity_str) or entity_str == '[]' or entity_str == '':
+def parse_entity_column(entity_str: str) -> List[str]:
+    """Parse entity column for validation purposes."""
+    if pd.isna(entity_str) or entity_str == 'empty' or entity_str == '[]' or entity_str == '':
         return []
     try:
         parsed = ast.literal_eval(entity_str)
         return parsed if isinstance(parsed, list) else []
-    except (ValueError, SyntaxError):
+    except (ValueError, SyntaxError, TypeError):
         return []
+
+def collect_all_categories(df: pd.DataFrame) -> List[str]:
+    """Collect all unique categories from the dataset."""
+    categories = set()
+    for idx, row in df.iterrows():
+        spans = parse_target_column(row['target'])
+        for start, end, category in spans:
+            categories.add(category)
+    return sorted(list(categories))
 
 def char_spans_to_bio_labels(
     text: str,
@@ -90,13 +97,26 @@ def tokenize_and_align(
     }
 
 def main():
+    parser = argparse.ArgumentParser(description='Prepare dataset for NER training')
+    parser.add_argument('--input', type=str, default='data/raw/train_dataset.tsv',
+                      help='Input TSV file path')
+    parser.add_argument('--output_dir', type=str, default='data/processed',
+                      help='Output directory for processed data')
+    parser.add_argument('--model_name', type=str, default='cointegrated/rubert-tiny2',
+                      help='Tokenizer model name')
+    parser.add_argument('--train_ratio', type=float, default=0.7,
+                      help='Train split ratio')
+    parser.add_argument('--val_ratio', type=float, default=0.15,
+                      help='Validation split ratio')
+    args = parser.parse_args()
+    
     # Paths
-    raw_data_path = Path('data/raw/train_dataset.tsv')
-    processed_dir = Path('data/processed')
+    raw_data_path = Path(args.input)
+    processed_dir = Path(args.output_dir)
     processed_dir.mkdir(parents=True, exist_ok=True)
     
     # Load tokenizer
-    model_name = 'cointegrated/rubert-tiny2'
+    model_name = args.model_name
     print(f"Loading tokenizer: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     
@@ -105,30 +125,63 @@ def main():
     df = pd.read_csv(raw_data_path, sep='\t')
     print(f"Loaded {len(df)} rows")
     
-    # Parse entity column
-    print("Parsing entity annotations...")
-    df['entity_parsed'] = df['entity'].apply(parse_entity_column)
+    # Validate columns
+    required_columns = {'text', 'target', 'entity'}
+    if not required_columns.issubset(df.columns):
+        missing = required_columns - set(df.columns)
+        print(f"ERROR: Missing required columns: {missing}")
+        print(f"Available columns: {list(df.columns)}")
+        exit(1)
+    
+    # Parse target column
+    print("Parsing target annotations...")
+    df['target_parsed'] = df['target'].apply(parse_target_column)
     
     # Filter out rows with valid text
     df = df[df['text'].notna()].copy()
     df['text'] = df['text'].astype(str)
     
+    # Collect all categories
+    print("Collecting categories...")
+    all_categories = collect_all_categories(df)
+    print(f"Found {len(all_categories)} unique categories")
+    
     # Statistics
     entity_counts = defaultdict(int)
-    for entities in df['entity_parsed']:
-        for _, _, cat in entities:
-            entity_counts[cat] += 1
+    rows_with_entities = 0
+    rows_without_entities = 0
+    invalid_rows = 0
     
-    print("\nEntity distribution:")
-    for cat, count in sorted(entity_counts.items(), key=lambda x: -x[1]):
+    for idx, row in df.iterrows():
+        spans = row['target_parsed']
+        if spans is None or (isinstance(spans, list) and len(spans) == 0):
+            rows_without_entities += 1
+        else:
+            rows_with_entities += 1
+            for _, _, cat in spans:
+                entity_counts[cat] += 1
+    
+    print("\nDataset statistics:")
+    print(f"  Total rows: {len(df)}")
+    print(f"  Rows with entities: {rows_with_entities}")
+    print(f"  Rows without entities: {rows_without_entities}")
+    print(f"\nTop 20 categories by frequency:")
+    for cat, count in sorted(entity_counts.items(), key=lambda x: -x[1])[:20]:
         print(f"  {cat}: {count}")
+    
+    # Create label list
+    all_labels = ['O'] + [f'B-{cat}' for cat in all_categories] + [f'I-{cat}' for cat in all_categories]
+    label_path = processed_dir / 'labels.json'
+    with open(label_path, 'w', encoding='utf-8') as f:
+        json.dump(all_labels, f, ensure_ascii=False, indent=2)
+    print(f"\nSaved {len(all_labels)} labels to {label_path}")
     
     # Shuffle and split
     indices = list(range(len(df)))
     random.shuffle(indices)
     
-    n_train = int(len(indices) * 0.7)
-    n_val = int(len(indices) * 0.15)
+    n_train = int(len(indices) * args.train_ratio)
+    n_val = int(len(indices) * args.val_ratio)
     
     train_idx = indices[:n_train]
     val_idx = indices[n_train:n_train + n_val]
@@ -151,39 +204,45 @@ def main():
         for idx in tqdm(split_indices, desc=f"Tokenizing {split_name}"):
             row = df.iloc[idx]
             text = row['text']
-            char_spans = row['entity_parsed']
+            char_spans = row['target_parsed']
             
-            tokenized = tokenize_and_align(text, char_spans, tokenizer)
-            tokenized_data.append(tokenized)
+            if char_spans is None:
+                char_spans = []
+            
+            try:
+                tokenized = tokenize_and_align(text, char_spans, tokenizer)
+                tokenized_data.append(tokenized)
+            except Exception as e:
+                print(f"Warning: Failed to process row {idx}: {e}")
+                continue
         
         # Save tokenized
         tokenized_path = processed_dir / f'{split_name}.json'
         with open(tokenized_path, 'w', encoding='utf-8') as f:
             json.dump(tokenized_data, f, ensure_ascii=False, indent=2)
-        print(f"Saved tokenized data to {tokenized_path}")
+        print(f"Saved {len(tokenized_data)} tokenized samples to {tokenized_path}")
         
-        # Raw version (for rule-based and evaluation)
+        # Raw version (for evaluation)
         raw_data = []
         for idx in split_indices:
             row = df.iloc[idx]
+            spans = row['target_parsed']
+            if spans is None:
+                spans = []
+            
+            # Convert to list of lists for JSON serialization
+            spans_list = [[start, end, cat] for start, end, cat in spans]
+            
             raw_data.append({
                 'text': row['text'],
-                'entities': row['entity_parsed'],
-                'entity_texts': ast.literal_eval(row['entity_texts']) if pd.notna(row['entity_texts']) else []
+                'spans': spans_list
             })
         
         raw_path = processed_dir / f'{split_name}_raw.jsonl'
         with open(raw_path, 'w', encoding='utf-8') as f:
             for item in raw_data:
                 f.write(json.dumps(item, ensure_ascii=False) + '\n')
-        print(f"Saved raw data to {raw_path}")
-    
-    # Save label list
-    all_labels = ['O'] + [f'B-{cat}' for cat in CATEGORIES] + [f'I-{cat}' for cat in CATEGORIES]
-    label_path = processed_dir / 'labels.json'
-    with open(label_path, 'w', encoding='utf-8') as f:
-        json.dump(all_labels, f, ensure_ascii=False, indent=2)
-    print(f"\nSaved label list to {label_path}")
+        print(f"Saved {len(raw_data)} raw samples to {raw_path}")
     
     print("\nData preparation complete!")
 

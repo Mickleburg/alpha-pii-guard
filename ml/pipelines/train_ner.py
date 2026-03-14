@@ -88,6 +88,8 @@ def compute_metrics(eval_pred, id2label):
 
 def main():
     parser = argparse.ArgumentParser(description='Train NER model')
+    parser.add_argument('--data_dir', type=str, default='data/processed',
+                      help='Directory containing processed data')
     parser.add_argument('--model_name', type=str, default='cointegrated/rubert-tiny2',
                       help='HuggingFace model name')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
@@ -98,7 +100,7 @@ def main():
     args = parser.parse_args()
     
     # Paths
-    processed_dir = Path('data/processed')
+    processed_dir = Path(args.data_dir)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
