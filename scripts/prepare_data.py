@@ -102,7 +102,7 @@ def main():
                       help='Input TSV file path')
     parser.add_argument('--output_dir', type=str, default='data/processed',
                       help='Output directory for processed data')
-    parser.add_argument('--model_name', type=str, default='cointegrated/rubert-tiny2',
+    parser.add_argument('--model_name', type=str, default='DeepPavlov/rubert-base-cased',
                       help='Tokenizer model name')
     parser.add_argument('--train_ratio', type=float, default=0.7,
                       help='Train split ratio')
@@ -175,6 +175,11 @@ def main():
     with open(label_path, 'w', encoding='utf-8') as f:
         json.dump(all_labels, f, ensure_ascii=False, indent=2)
     print(f"\nSaved {len(all_labels)} labels to {label_path}")
+
+    tokenizer_meta_path = processed_dir / 'tokenizer_name.json'
+    with open(tokenizer_meta_path, 'w', encoding='utf-8') as f:
+        json.dump({"model_name": args.model_name}, f, ensure_ascii=False, indent=2)
+    print(f"Saved tokenizer metadata to {tokenizer_meta_path}")
     
     # Shuffle and split
     indices = list(range(len(df)))

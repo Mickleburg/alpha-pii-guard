@@ -108,10 +108,10 @@ def main():
     parser.add_argument(
         "--model_name",
         type=str,
-        default="cointegrated/rubert-tiny2",
+        default="DeepPavlov/rubert-base-cased",
         help="HuggingFace model name",
     )
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
+    parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
     parser.add_argument("--epochs", type=int, default=5, help="Number of epochs")
     parser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate")
     parser.add_argument(
@@ -136,6 +136,23 @@ def main():
     label2id, id2label = load_labels(processed_dir / "labels.json")
     num_labels = len(label2id)
     print(f"Number of labels: {num_labels}")
+
+    print("\nLoading labels...")
+    label2id, id2label = load_labels(processed_dir / "labels.json")
+    num_labels = len(label2id)
+    print(f"Number of labels: {num_labels}")
+
+    tokenizer_meta_path = processed_dir / "tokenizer_name.json"
+    if tokenizer_meta_path.exists():
+        with open(tokenizer_meta_path, "r", encoding="utf-8") as f:
+            tokenizer_meta = json.load(f)
+        prepared_with = tokenizer_meta.get("model_name")
+        if prepared_with and prepared_with != args.model_name:
+            raise ValueError(
+                f"Processed data was created with tokenizer '{prepared_with}', "
+                f"but training uses '{args.model_name}'. "
+                f"Re-run prepare_data.py with the same --model_name."
+            )
 
     print("\nLoading training data...")
     train_data = load_processed_data(processed_dir / "train.json")
