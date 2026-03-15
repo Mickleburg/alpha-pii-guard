@@ -1,8 +1,10 @@
 from typing import List, Tuple, Set
 
+
 # ============================================================================
 # СЛИЯНИЕ REGEX И NER ПРЕДСКАЗАНИЙ
 # ============================================================================
+
 
 def merge_predictions(
     regex_spans: List[Tuple[int, int, str]],
@@ -53,6 +55,7 @@ def merge_predictions(
     return result
 
 
+
 def _spans_overlap(span1: Tuple[int, int], span2: Tuple[int, int]) -> bool:
     """
     Проверяет, пересекаются ли два span'а.
@@ -72,16 +75,22 @@ def _spans_overlap(span1: Tuple[int, int], span2: Tuple[int, int]) -> bool:
     return not (end1 <= start2 or end2 <= start1)
 
 
+
 def merge_multiple(
     predictions: List[List[Tuple[int, int, str]]],
-    weights: List[float] = None
+    weights: List[float] = None,
+    strategy: str = "ensemble_vote"
 ) -> List[Tuple[int, int, str]]:
     """
-    Слияние нескольких списков предсказаний (для ансамблей).
+    ✅ ИСПРАВЛЕНО: Слияние нескольких списков предсказаний (для ансамблей).
     
     Args:
         predictions: Список списков spans из разных моделей
-        weights: Веса для каждой модели (опционально)
+        weights: Веса для каждой модели (опционально, не используется в текущей версии)
+        strategy: Стратегия слияния:
+            - "ensemble_vote": span включается если встречается в >50% моделей
+            - "first_wins": первая модель имеет приоритет (как merge_predictions)
+            - "union": объединение всех spans
     
     Returns:
         Объединённый список spans
@@ -93,12 +102,35 @@ def merge_multiple(
     if len(predictions) == 1:
         return sorted(predictions[0], key=lambda x: (x[0], x[1]))
     
-    # Слияние двух первых, потом с остальными
-    result = predictions[0]
-    for pred in predictions[1:]:
-        result = merge_predictions(result, pred)
+    if strategy == "first_wins":
+        # Первая модель приоритет (как старая merge_predictions)
+        result = predictions[0]
+        for pred in predictions[1:]:
+            result = merge_predictions(result, pred)
+        return result
     
-    return result
+    elif strategy == "union":
+        # Объединение всех spans с дедупликацией
+        all_spans: Set[Tuple[int, int, str]] = set()
+        for pred_list in predictions:
+            all_spans.update(pred_list)
+        return sorted(list(all_spans), key=lambda x: (x[0], x[1]))
+    
+    elif strategy == "ensemble_vote":
+        # Span включается если встречается в >50% моделей
+        span_counts: dict = {}
+        threshold = len(predictions) / 2
+        
+        for pred_list in predictions:
+            for span in pred_list:
+                span_counts[span] = span_counts.get(span, 0) + 1
+        
+        result = [span for span, count in span_counts.items() if count > threshold]
+        return sorted(result, key=lambda x: (x[0], x[1]))
+    
+    else:
+        raise ValueError(f"Unknown merge strategy: {strategy}")
+
 
 
 def deduplicate_spans(
@@ -114,6 +146,7 @@ def deduplicate_spans(
         Список spans без дубликатов
     """
     return sorted(list(set(spans)), key=lambda x: (x[0], x[1]))
+
 
 
 def merge_overlapping_spans(
@@ -155,6 +188,7 @@ def merge_overlapping_spans(
     
     result.append(tuple(current))
     return result
+
 
 
 def filter_by_confidence(

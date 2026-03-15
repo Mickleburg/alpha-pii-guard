@@ -4,14 +4,17 @@ import ast
 import os
 from pathlib import Path
 
+
 from src.regex_detector import detect_pii
 from src.ner_model import NERModel
 from src.merge_predictions import merge_predictions
 from src.prepare_data import read_train_dataset, read_test_dataset
-from src.evaluate import compute_metrics
+from src.evaluate import compute_metrics, print_metrics
 from src.utils import ensure_dirs
 
+
 ensure_dirs()
+
 
 def prepare_command(args):
     """Копируем данные в папки (нет валидации на отдельной)."""
@@ -21,12 +24,13 @@ def prepare_command(args):
     if os.path.exists("data/raw/train_dataset.tsv"):
         train_df = read_train_dataset("data/raw/train_dataset.tsv")
         train_df.to_csv("data/processed/train.csv", index=False)
-        print(f"Train: {len(train_df)} samples")
+        print(f"✓ Train: {len(train_df)} samples")
     
     if os.path.exists("data/raw/private_test_dataset.csv"):
         test_df = read_test_dataset("data/raw/private_test_dataset.csv")
         test_df.to_csv("data/processed/test.csv", index=False)
-        print(f"Test: {len(test_df)} samples")
+        print(f"✓ Test: {len(test_df)} samples")
+
 
 def regex_command(args):
     """Запуск regex детектора на test датасете."""
@@ -36,7 +40,7 @@ def regex_command(args):
     print(f"Running regex detector on {input_file}...")
     
     if not os.path.exists(input_file):
-        print(f"File not found: {input_file}")
+        print(f"❌ File not found: {input_file}")
         return
     
     if input_file.endswith(".tsv"):
@@ -78,10 +82,14 @@ def regex_command(args):
                 targets.append([])
         
         metrics = compute_metrics(predictions, targets)
-        print(f"  Regex metrics: P={metrics['precision']:.4f}, R={metrics['recall']:.4f}, F1={metrics['micro_f1']:.4f}")
+        print_metrics(metrics, "Regex Detector")
+
 
 def ner_train_command(args):
-    """Обучение NER модели на всём train датасете."""
+    """
+    ✅ ИСПРАВЛЕНО: Обучение NER модели на всём train датасете.
+    Теперь использует "tiny" модель по умолчанию вместо "deeppavlov"!
+    """
     print("Training NER model...")
     
     if not os.path.exists("data/processed/train.csv"):
@@ -103,10 +111,12 @@ def ner_train_command(args):
     
     print(f"Training on {len(train_df)} samples...")
 
-    model = NERModel(model_name="deeppavlov")
+    # ✅ ИСПРАВЛЕНО: Используем "tiny" вместо "deeppavlov"
+    model = NERModel(model_name="tiny")  # Меньше памяти, быстрее
 
     model.train(train_df, epochs=3, batch_size=8, max_len=512)
     print("✓ NER model trained and saved")
+
 
 def ner_predict_command(args):
     """Предсказание NER на test датасете."""
@@ -122,7 +132,8 @@ def ner_predict_command(args):
     df = pd.read_csv(input_file, dtype=str)
     df["text"] = df["text"].astype(str)
     
-    model = NERModel()
+    # ✅ ИСПРАВЛЕНО: Правильная инициализация модели с "tiny"
+    model = NERModel(model_name="tiny")
     model.load()
     
     print(f"Predicting on {len(df)} texts...")
@@ -154,7 +165,8 @@ def ner_predict_command(args):
                 targets.append([])
         
         metrics = compute_metrics(predictions, targets)
-        print(f"  NER metrics: P={metrics['precision']:.4f}, R={metrics['recall']:.4f}, F1={metrics['micro_f1']:.4f}")
+        print_metrics(metrics, "NER Model")
+
 
 def merge_command(args):
     """Merge regex и NER predictions."""
@@ -211,6 +223,7 @@ def merge_command(args):
     print(f"✓ Saved to {output_file}")
     print(f"  Sample merged: {merged[0] if merged else '[]'}")
 
+
 def all_command(args):
     """Полный pipeline: подготовка -> обучение -> предсказания -> merge."""
     print("=" * 60)
@@ -224,17 +237,18 @@ def all_command(args):
     ner_train_command(args)
     
     print("\n[3/5] Running regex detector...")
-    regex_command({**vars(args), "input": "data/processed/test.csv", "output": "data/answer/regex_predictions.csv"})
+    regex_command(args)
     
     print("\n[4/5] Running NER predictions...")
-    ner_predict_command({**vars(args), "input": "data/processed/test.csv", "output": "data/answer/ner_predictions.csv"})
+    ner_predict_command(args)
     
     print("\n[5/5] Merging predictions...")
-    merge_command({**vars(args), "regex": "data/answer/regex_predictions.csv", "ner": "data/answer/ner_predictions.csv", "output": "data/answer/merged_predictions.csv"})
+    merge_command(args)
     
     print("\n" + "=" * 60)
     print("✓ Pipeline completed!")
     print("=" * 60)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="NER Pipeline for Russian PII detection")

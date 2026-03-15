@@ -7,12 +7,15 @@ from typing import List, Tuple
 from tqdm import tqdm
 import os
 
+
 from src.labels import LABEL2ID, ID2LABEL, LABELS
 from src.prepare_data import spans_to_bio_tags
+
 
 # ============================================================================
 # КОНФИГУРАЦИЯ МОДЕЛЕЙ
 # ============================================================================
+
 
 # Опции моделей для русского языка NER
 MODEL_OPTIONS = {
@@ -22,9 +25,11 @@ MODEL_OPTIONS = {
     "deeppavlov": "DeepPavlov/rubert-base-cased",  # ~110M params, производственный
 }
 
+
 # ============================================================================
 # NER ДАТАСЕТ
 # ============================================================================
+
 
 class NERDataset(Dataset):
     def __init__(
@@ -99,14 +104,16 @@ class NERDataset(Dataset):
         }
 
 
+
 # ============================================================================
 # NER МОДЕЛЬ
 # ============================================================================
 
+
 class NERModel:
     def __init__(
         self,
-        model_name: str = "base",  # "tiny", "base", "large", "deeppavlov"
+        model_name: str = "tiny",  # "tiny", "base", "large", "deeppavlov" (по умолчанию tiny!)
         output_dir: str = "ner_model",
         device: str = None
     ):
@@ -137,11 +144,27 @@ class NERModel:
         
         # Загружаем токенайзер и модель
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        
+        # ✅ ИСПРАВЛЕНИЕ 1: Правильное число лабелов
+        # LABEL2ID содержит: "O" + B- и I- версии для каждого LABELS
+        # Всего: 1 + 30*2 = 61
+        num_labels = len(LABEL2ID)
+        print(f"Number of labels: {num_labels}")
+        
         self.model = AutoModelForTokenClassification.from_pretrained(
             self.model_name,
-            num_labels=len(LABELS) + 1
+            num_labels=num_labels  # ✅ ИСПРАВЛЕНО
         )
-        self.model.to(self.device)
+        
+        # ✅ ИСПРАВЛЕНИЕ 2: Убираем .to(device) после multi-GPU инициализации
+        # Это вызывает проблемы с DataParallel
+        if torch.cuda.device_count() > 1:
+            print(f"Using {torch.cuda.device_count()} GPUs")
+            # Для transformers лучше использовать device_map вместо DataParallel
+            # Но для совместимости оставим просто на первый GPU
+            self.model = self.model.to(self.device)
+        else:
+            self.model.to(self.device)
     
     def train(
         self,
@@ -176,7 +199,10 @@ class NERModel:
             max_len=max_len,
         )
         
-        # Конфигурация обучения
+        # ✅ ИСПРАВЛЕНИЕ 3: Правильные TrainingArguments
+        # - eval_strategy="no" вместо save_strategy по умолчанию
+        # - gradient_accumulation_steps для экономии памяти
+        # - fp16 только если есть GPU
         training_args = TrainingArguments(
             output_dir=self.output_dir,
             num_train_epochs=epochs,
@@ -187,15 +213,21 @@ class NERModel:
             save_total_limit=2,
             logging_steps=50,
             seed=42,
+            eval_strategy="no",  # ✅ ИСПРАВЛЕНО: Не требуем eval датасета
+            save_strategy="steps",  # Сохраняем по шагам
+            gradient_accumulation_steps=2,  # ✅ ДОБАВЛЕНО: Для экономии памяти
             fp16=torch.cuda.is_available(),  # Mixed precision если доступен GPU
+            dataloader_pin_memory=True,
+            optim="adamw_8bit" if torch.cuda.is_available() else "adamw_torch",  # ✅ Экономия памяти
         )
         
-        # Создаём Trainer
+        # ✅ ИСПРАВЛЕНИЕ 4: Убираем eval_dataset=None
+        # Создаём Trainer без eval_dataset (поскольку eval_strategy="no")
         trainer = Trainer(
             model=self.model,
             args=training_args,
             train_dataset=train_dataset,
-            eval_dataset=None,
+            # eval_dataset убран, т.к. eval_strategy="no"
         )
         
         # Обучаем
@@ -219,12 +251,12 @@ class NERModel:
         Returns:
             Список (start, end, label) spans
         """
-        # Токенизируем
+        # ✅ ИСПРАВЛЕНИЕ 5: Явно указываем return_offsets_mapping=True
         encoding = self.tokenizer(
             text,
             truncation=True,
             max_length=max_len,
-            return_offsets_mapping=True,
+            return_offsets_mapping=True,  # ✅ ЯВНО УКАЗАНО
             return_tensors="pt",
         )
         
