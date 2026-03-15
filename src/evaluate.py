@@ -1,42 +1,30 @@
 import pandas as pd
-from typing import List, Tuple
 
-def compute_metrics(predictions: List[List[Tuple[int, int, str]]], targets: List[List[Tuple[int, int, str]]]) -> dict:
-    """Строгая метрика: совпадение только если совпали start, end и label."""
-    
+
+def compute_metrics(predictions, targets):
     tp = 0
     fp = 0
     fn = 0
-    
+
     for pred, target in zip(predictions, targets):
-        pred_set = set(pred)
-        target_set = set(target)
-        
+        pred_set = set(tuple(x) for x in pred)
+        target_set = set(tuple(x) for x in target)
+
         tp += len(pred_set & target_set)
         fp += len(pred_set - target_set)
         fn += len(target_set - pred_set)
-    
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    micro_f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
-    
+
+    precision = tp / (tp + fp) if (tp + fp) else 0.0
+    recall = tp / (tp + fn) if (tp + fn) else 0.0
+    micro_f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+
     return {
         "precision": precision,
         "recall": recall,
         "micro_f1": micro_f1,
     }
 
-def save_metrics(metrics_dict: dict, output_path: str):
-    """Сохраняем метрики в CSV."""
-    rows = []
-    for key, value in metrics_dict.items():
-        rows.append({
-            "model": value["model"],
-            "dataset": value["dataset"],
-            "precision": value["precision"],
-            "recall": value["recall"],
-            "micro_f1": value["micro_f1"],
-        })
-    
-    df = pd.DataFrame(rows)
+
+def save_metrics(rows, output_path: str):
+    df = pd.DataFrame(rows, columns=["model", "dataset", "precision", "recall", "micro_f1"])
     df.to_csv(output_path, index=False)
