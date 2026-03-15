@@ -1,8 +1,10 @@
 """Training utilities for NER model."""
 
+
 import os
 from pathlib import Path
 from typing import Optional, Dict, Any
+
 
 import torch
 from torch.utils.data import DataLoader
@@ -13,6 +15,7 @@ from transformers import (
 )
 from transformers import Trainer, TrainingArguments
 
+
 from src.utils.logging_utils import get_logger
 from src.utils.config import load_config, get_labels
 from src.ner.labeling import BIOLabeler
@@ -21,7 +24,9 @@ from src.ner.dataset import NERDataset, create_data_collator
 from src.data.readers import load_jsonl_documents
 from src.metrics.strict_span_f1 import per_category_metrics
 
+
 logger = get_logger(__name__)
+
 
 
 class NERTrainer:
@@ -115,6 +120,7 @@ class NERTrainer:
             save_steps=self.config["training"]["save_steps"],
             save_total_limit=self.config["training"]["save_total_limit"],
             load_best_model_at_end=True,
+            save_safetensors=False,
             
             # Logging
             logging_steps=self.config["training"]["logging_steps"],
@@ -141,6 +147,7 @@ class NERTrainer:
           ]
         )
 
+
         
         # Train
         logger.info("Starting training...")
@@ -153,6 +160,7 @@ class NERTrainer:
         logger.info(f"Training complete. Model saved to {self.output_dir}")
         
         return result
+
 
 
 def train_ner_model(

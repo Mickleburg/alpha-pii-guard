@@ -1,14 +1,19 @@
 """BERT-based NER model."""
 
+
 from typing import Optional, Tuple
+
 
 import torch
 import torch.nn as nn
 from transformers import AutoModel, AutoConfig
 
+
 from src.utils.logging_utils import get_logger
 
+
 logger = get_logger(__name__)
+
 
 
 class BertNER(nn.Module):
@@ -56,13 +61,16 @@ class BertNER(nn.Module):
             return_dict=True
         )
 
+
         sequence_output = bert_output.last_hidden_state
         sequence_output = self.dropout(sequence_output)
         logits = self.classifier(sequence_output)
 
+
         loss = None
         if labels is not None:
             loss_fn = nn.CrossEntropyLoss()
+
 
             active_loss = attention_mask.view(-1) == 1
             active_logits = logits.view(-1, self.config.num_labels)
@@ -72,10 +80,13 @@ class BertNER(nn.Module):
                 torch.tensor(loss_fn.ignore_index, device=labels.device)
             )
 
+
             loss = loss_fn(active_logits, active_labels)
             return loss, logits
 
+
         return logits
+
 
     
     def to_device(self, device: str) -> "BertNER":
@@ -92,6 +103,7 @@ class BertNER(nn.Module):
         """Set to evaluation mode."""
         self.eval()
         return self
+
 
 
 class NERModel:
