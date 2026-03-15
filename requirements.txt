@@ -7,9 +7,12 @@ pandas>=1.3.0
 # Deep Learning
 torch>=2.0.0
 transformers>=4.30.0
+accelerate>=0.21.0
 
 # NLP
 regex>=2022.10.31
+seqeval>=1.2.2
+datasets>=2.14.0
 
 # Data validation
 pydantic>=1.10.0
@@ -17,6 +20,7 @@ pydantic>=1.10.0
 # Testing
 pytest>=7.0.0
 pytest-cov>=4.0.0
+scikit-learn>=1.2.0
 
 # Logging and utils
 tqdm>=4.64.0
@@ -24,7 +28,6 @@ tqdm>=4.64.0
 # API (optional, for FastAPI demo)
 fastapi>=0.95.0
 uvicorn>=0.21.0
-pydantic[email]>=1.10.0
 
 # Development
 black>=23.0.0
