@@ -9,10 +9,40 @@ import os
 
 from src.labels import LABEL2ID, ID2LABEL, LABELS
 from src.prepare_data import spans_to_bio_tags
-from src.utils import bio_to_spans
+
+# ============================================================================
+# КОНФИГУРАЦИЯ МОДЕЛЕЙ
+# ============================================================================
+
+# Опции моделей для русского языка NER
+MODEL_OPTIONS = {
+    "tiny": "cointegrated/rubert-tiny2",           # ~6M params, ~100MB
+    "base": "cointegrated/rubert-base-cased",      # ~110M params, ~440MB
+    "large": "cointegrated/rubert-large-cased",    # ~360M params, ~1.4GB
+    "deeppavlov": "DeepPavlov/rubert-base-cased",  # ~110M params, производственный
+}
+
+# ============================================================================
+# NER ДАТАСЕТ
+# ============================================================================
 
 class NERDataset(Dataset):
-    def __init__(self, texts: List[str], spans: List[List[Tuple[int, int, str]]], tokenizer, max_len=512):
+    def __init__(
+        self,
+        texts: List[str],
+        spans: List[List[Tuple[int, int, str]]],
+        tokenizer,
+        max_len: int = 512
+    ):
+        """
+        Датасет для токен-классификации NER.
+        
+        Args:
+            texts: Список текстов
+            spans: Список списков spans (start, end, label)
+            tokenizer: Токенайзер из transformers
+            max_len: Максимальная длина последовательности
+        """
         self.texts = texts
         self.spans = spans
         self.tokenizer = tokenizer
@@ -21,9 +51,12 @@ class NERDataset(Dataset):
         self._prepare()
     
     def _prepare(self):
+        """Подготавливает данные к обучению."""
         for text, span_list in zip(self.texts, self.spans):
+            # Конвертируем spans в BIO-теги на уровне символов
             bio_tags = spans_to_bio_tags(text, span_list)
             
+            # Токенизируем с сохранением информации об offsets
             encoding = self.tokenizer(
                 text,
                 truncation=True,
@@ -32,47 +65,110 @@ class NERDataset(Dataset):
                 return_offsets_mapping=True,
             )
             
+            # Конвертируем символьные BIO-теги в токенные
             labels = []
             for i, offset in enumerate(encoding["offset_mapping"]):
-                if offset[0] == offset[1]:
-                    # Специальный токен
-                    labels.append(-100)
+                start_char, end_char = offset
+                
+                # Токены для специальных символов и padding
+                if start_char == end_char:
+                    labels.append(-100)  # Игнорируем при вычислении loss
                 else:
-                    char_idx = offset[0]
-                    if char_idx < len(bio_tags):
-                        tag = bio_tags[char_idx]
-                        labels.append(LABEL2ID.get(tag, LABEL2ID.get("O", 0)))
+                    # Берём тег для первого символа токена
+                    if start_char < len(bio_tags):
+                        tag = bio_tags[start_char]
+                        label_id = LABEL2ID.get(tag, LABEL2ID.get("O", 0))
                     else:
-                        labels.append(LABEL2ID.get("O", 0))
+                        label_id = LABEL2ID.get("O", 0)
+                    
+                    labels.append(label_id)
             
             encoding["labels"] = labels
             del encoding["offset_mapping"]
             self.encodings.append(encoding)
     
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.encodings)
     
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> dict:
         enc = self.encodings[idx]
         return {
-            "input_ids": torch.tensor(enc["input_ids"]),
-            "attention_mask": torch.tensor(enc["attention_mask"]),
-            "labels": torch.tensor(enc["labels"]),
+            "input_ids": torch.tensor(enc["input_ids"], dtype=torch.long),
+            "attention_mask": torch.tensor(enc["attention_mask"], dtype=torch.long),
+            "labels": torch.tensor(enc["labels"], dtype=torch.long),
         }
 
+
+# ============================================================================
+# NER МОДЕЛЬ
+# ============================================================================
+
 class NERModel:
-    def __init__(self, model_name="cointegrated/rubert-tiny2", output_dir="ner_model"):
-        self.model_name = model_name
+    def __init__(
+        self,
+        model_name: str = "base",  # "tiny", "base", "large", "deeppavlov"
+        output_dir: str = "ner_model",
+        device: str = None
+    ):
+        """
+        Инициализирует NER модель.
+        
+        Args:
+            model_name: Название модели из MODEL_OPTIONS или полный путь
+            output_dir: Директория для сохранения модели
+            device: Устройство вычисления ("cuda", "cpu")
+        """
         self.output_dir = output_dir
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        # Всего меток: O + B-label и I-label для каждого из 30 лейблов
-        num_labels = len(LABEL2ID)
+        
+        # Резолвим название модели
+        if model_name in MODEL_OPTIONS:
+            self.model_name = MODEL_OPTIONS[model_name]
+        else:
+            self.model_name = model_name
+        
+        # Устанавливаем device
+        if device is None:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device
+        
+        print(f"Using device: {self.device}")
+        print(f"Using model: {self.model_name}")
+        
+        # Загружаем токенайзер и модель
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         self.model = AutoModelForTokenClassification.from_pretrained(
-            model_name, num_labels=num_labels
+            self.model_name,
+            num_labels=len(LABELS) + 1
         )
+        self.model.to(self.device)
     
-    def train(self, train_df, epochs=3, batch_size=8, max_len=512):
-        """Обучаем модель на всём train датасете (без валидации)."""
+    def train(
+        self,
+        train_df: pd.DataFrame,
+        valid_df: pd.DataFrame = None,
+        epochs: int = 3,
+        batch_size: int = 8,
+        learning_rate: float = 2e-5,
+        max_len: int = 512,
+        save_steps: int = 100
+    ) -> dict:
+        """
+        Обучает NER модель.
+        
+        Args:
+            train_df: DataFrame с колонками ['text', 'target']
+            valid_df: Валидационный DataFrame (опционально)
+            epochs: Число эпох обучения
+            batch_size: Размер batch'а
+            learning_rate: Learning rate для оптимизатора
+            max_len: Максимальная длина последовательности
+            save_steps: Каждые сколько шагов сохранять checkpoint
+        
+        Returns:
+            История обучения
+        """
+        # Подготавливаем датасеты
         train_dataset = NERDataset(
             train_df["text"].tolist(),
             train_df["target"].tolist(),
@@ -80,30 +176,50 @@ class NERModel:
             max_len=max_len,
         )
         
+        # Конфигурация обучения
         training_args = TrainingArguments(
             output_dir=self.output_dir,
             num_train_epochs=epochs,
             per_device_train_batch_size=batch_size,
-            save_steps=100,
+            per_device_eval_batch_size=batch_size,
+            learning_rate=learning_rate,
+            save_steps=save_steps,
             save_total_limit=2,
             logging_steps=50,
             seed=42,
-            learning_rate=2e-5,
-            weight_decay=0.01,
+            fp16=torch.cuda.is_available(),  # Mixed precision если доступен GPU
         )
         
+        # Создаём Trainer
         trainer = Trainer(
             model=self.model,
             args=training_args,
             train_dataset=train_dataset,
+            eval_dataset=None,
         )
         
+        # Обучаем
         trainer.train()
+        
+        # Сохраняем
         self.model.save_pretrained(self.output_dir)
         self.tokenizer.save_pretrained(self.output_dir)
+        
+        print(f"Model saved to {self.output_dir}")
+        return trainer.state.log_history
     
-    def predict_text(self, text: str, max_len=512) -> List[Tuple[int, int, str]]:
-        """Предсказываем на одном тексте. Возвращаем список кортежей (start, end, label)."""
+    def predict_text(self, text: str, max_len: int = 512) -> List[Tuple[int, int, str]]:
+        """
+        Предсказывает spans для одного текста.
+        
+        Args:
+            text: Входной текст
+            max_len: Максимальная длина последовательности
+        
+        Returns:
+            Список (start, end, label) spans
+        """
+        # Токенизируем
         encoding = self.tokenizer(
             text,
             truncation=True,
@@ -114,34 +230,84 @@ class NERModel:
         
         offset_mapping = encoding.pop("offset_mapping")[0].numpy()
         
+        # Предсказываем
+        self.model.eval()
         with torch.no_grad():
-            outputs = self.model(**encoding)
+            outputs = self.model(**{k: v.to(self.device) for k, v in encoding.items()})
             logits = outputs.logits[0].cpu().numpy()
         
-        pred_labels = np.argmax(logits, axis=1)
+        # Получаем pred_labels
+        pred_ids = np.argmax(logits, axis=1)
         
-        # Преобразуем ID в BIO-теги
-        bio_tags = []
-        for pred_id in pred_labels:
-            tag = ID2LABEL.get(pred_id, "O")
-            bio_tags.append(tag)
+        # Конвертируем pred_ids в spans
+        spans = []
+        current_span = None
+        current_label = None
         
-        # Преобразуем BIO-теги в spans
-        spans = bio_to_spans(text, bio_tags)
+        for i, (pred_id, offset) in enumerate(zip(pred_ids, offset_mapping)):
+            start_char, end_char = offset
+            
+            # Пропускаем специальные токены
+            if start_char == end_char or pred_id == 0:  # 0 = "O" tag
+                if current_span is not None:
+                    spans.append((current_span[0], current_span[1], current_label))
+                current_span = None
+                current_label = None
+            else:
+                # Получаем label из pred_id
+                label_tag = ID2LABEL.get(pred_id, "O")
+                
+                # Убираем B-/I- префиксы
+                label = label_tag.replace("B-", "").replace("I-", "")
+                
+                # Проверяем, начинается ли новый span (B- tag)
+                if label_tag.startswith("B-") or current_label != label:
+                    if current_span is not None:
+                        spans.append((current_span[0], current_span[1], current_label))
+                    current_span = (start_char, end_char)
+                    current_label = label
+                else:
+                    # Продолжаем текущий span
+                    if current_span is not None:
+                        current_span = (current_span[0], end_char)
+        
+        # Добавляем последний span
+        if current_span is not None:
+            spans.append((current_span[0], current_span[1], current_label))
+        
         return sorted(spans, key=lambda x: x[0])
     
-    def predict_batch(self, texts: List[str]) -> List[List[Tuple[int, int, str]]]:
-        """Предсказываем на батче текстов. Возвращаем список списков кортежей."""
+    def predict_batch(
+        self,
+        texts: List[str],
+        batch_size: int = 4
+    ) -> List[List[Tuple[int, int, str]]]:
+        """
+        Предсказывает spans для batch'а текстов.
+        
+        Args:
+            texts: Список текстов
+            batch_size: Размер batch'а для ускорения обработки
+        
+        Returns:
+            Список списков spans
+        """
         predictions = []
-        for text in tqdm(texts, desc="NER prediction"):
-            pred = self.predict_text(text)
-            predictions.append(pred)
+        
+        for i in tqdm(range(0, len(texts), batch_size), desc="NER prediction"):
+            batch_texts = texts[i:i+batch_size]
+            for text in batch_texts:
+                pred = self.predict_text(text)
+                predictions.append(pred)
+        
         return predictions
     
     def load(self):
-        """Загружаем модель с диска."""
+        """Загружает сохранённую модель."""
         if os.path.exists(self.output_dir):
             self.model = AutoModelForTokenClassification.from_pretrained(self.output_dir)
             self.tokenizer = AutoTokenizer.from_pretrained(self.output_dir)
+            self.model.to(self.device)
+            print(f"Model loaded from {self.output_dir}")
         else:
-            raise FileNotFoundError(f"Model not found at {self.output_dir}")
+            raise FileNotFoundError(f"Model directory {self.output_dir} not found")
