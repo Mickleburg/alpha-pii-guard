@@ -186,7 +186,7 @@ python main.py all --model-name deeppavlov
 python make_submissions.py data/answer/merged_predictions.csv
 ```
 
-## Результат
+## Результаты
 Финальный submission нужно загружать в формате:
 
 - `id`
@@ -199,6 +199,10 @@ python make_submissions.py data/answer/merged_predictions.csv
 
 - `[(start, end, label), ...]`, если сущности найдены.
 
-## Kaggle score
+## Результаты экспериментов kaggle score
 
-Kaggle score: 
+- **Regex only**: `0.59950`
+
+- **NER only**: `0.96727`
+
+- **Merg**e: `0.95247`
