@@ -121,7 +121,6 @@ class NERTrainer:
             log_level="info",
             
             # Device
-            no_cuda=self.device == "cpu",
             
             # Reproducibility
             seed=self.config["random_seed"],
@@ -129,18 +128,19 @@ class NERTrainer:
         
         # Create trainer
         trainer = Trainer(
-            model=self.model,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=valid_dataset,
-            data_collator=create_data_collator(self.labeler),
-            callbacks=[
-                EarlyStoppingCallback(
-                    early_stopping_patience=self.config["training"]["early_stopping"]["patience"],
-                    early_stopping_threshold=0.01
-                )
-            ]
+          model=self.model,
+          args=training_args,
+          train_dataset=train_dataset,
+          eval_dataset=valid_dataset,
+          data_collator=create_data_collator(self.labeler),
+          callbacks=[
+              EarlyStoppingCallback(
+                  early_stopping_patience=self.config["training"]["early_stopping"]["patience"],
+                  early_stopping_threshold=0.01
+              )
+          ]
         )
+
         
         # Train
         logger.info("Starting training...")

@@ -48,51 +48,35 @@ class BertNER(nn.Module):
         attention_mask: torch.Tensor,
         token_type_ids: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """
-        Forward pass.
-        
-        Args:
-            input_ids: Token IDs [batch_size, seq_len]
-            attention_mask: Attention mask [batch_size, seq_len]
-            token_type_ids: Token type IDs [batch_size, seq_len]
-            labels: Label IDs [batch_size, seq_len] (optional, for training)
-            
-        Returns:
-            (logits, loss) where loss is None during inference
-        """
-        # BERT encoding
+    ):
         bert_output = self.bert(
             input_ids=input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
             return_dict=True
         )
-        
-        # Get sequence output
-        sequence_output = bert_output.last_hidden_state  # [batch_size, seq_len, hidden_size]
-        
-        # Apply dropout and classification
+
+        sequence_output = bert_output.last_hidden_state
         sequence_output = self.dropout(sequence_output)
-        logits = self.classifier(sequence_output)  # [batch_size, seq_len, num_labels]
-        
+        logits = self.classifier(sequence_output)
+
         loss = None
         if labels is not None:
-            # Compute loss
             loss_fn = nn.CrossEntropyLoss()
-            
-            # Mask padding tokens
+
             active_loss = attention_mask.view(-1) == 1
             active_logits = logits.view(-1, self.config.num_labels)
             active_labels = torch.where(
                 active_loss,
                 labels.view(-1),
-                torch.tensor(loss_fn.ignore_index).to(labels.device)
+                torch.tensor(loss_fn.ignore_index, device=labels.device)
             )
-            
+
             loss = loss_fn(active_logits, active_labels)
-        
-        return logits, loss
+            return loss, logits
+
+        return logits
+
     
     def to_device(self, device: str) -> "BertNER":
         """Move model to device."""

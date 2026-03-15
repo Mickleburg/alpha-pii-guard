@@ -171,18 +171,21 @@ class NERDataset(Dataset):
 
 def create_data_collator(labeler: BIOLabeler):
     """Create collate function for DataLoader."""
-    
+
     def collate_fn(batch):
         """Collate batch of samples."""
-        padded_batch = {
+        result = {
             "input_ids": torch.stack([item["input_ids"] for item in batch]),
             "attention_mask": torch.stack([item["attention_mask"] for item in batch]),
-            "token_type_ids": torch.stack([item["token_type_ids"] for item in batch]),
             "labels": torch.stack([item["labels"] for item in batch]),
-            "offset_mapping": [item["offset_mapping"] for item in batch],
-            "texts": [item["text"] for item in batch],
-            "doc_ids": [item["doc_id"] for item in batch]
         }
-        return padded_batch
-    
+
+        if all("token_type_ids" in item for item in batch):
+            result["token_type_ids"] = torch.stack(
+                [item["token_type_ids"] for item in batch]
+            )
+
+        return result
+
     return collate_fn
+
