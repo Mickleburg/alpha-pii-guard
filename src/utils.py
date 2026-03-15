@@ -6,7 +6,7 @@ def ensure_dirs():
     os.makedirs("data/answer", exist_ok=True)
 
 def spans_to_bio(text, spans):
-    """Преобразуем символьные span'ы в BIO-теги."""
+    """Преобразуем символьные span'ы (start, end, label) в BIO-теги."""
     bio_tags = []
     span_dict = {}
     
@@ -26,11 +26,41 @@ def spans_to_bio(text, spans):
     
     return bio_tags
 
+def bio_to_spans(text, bio_tags):
+    """Преобразуем BIO-теги обратно в spans (start, end, label)."""
+    spans = []
+    current_start = None
+    current_label = None
+    
+    for i, tag in enumerate(bio_tags):
+        if tag == "O":
+            if current_start is not None:
+                spans.append((current_start, i, current_label))
+                current_start = None
+                current_label = None
+        elif tag.startswith("B-"):
+            if current_start is not None:
+                spans.append((current_start, i, current_label))
+            current_label = tag[2:]
+            current_start = i
+        elif tag.startswith("I-"):
+            label = tag[2:]
+            if current_label != label:
+                if current_start is not None:
+                    spans.append((current_start, i, current_label))
+                current_start = i
+                current_label = label
+    
+    if current_start is not None:
+        spans.append((current_start, len(bio_tags), current_label))
+    
+    return spans
+
 def remove_overlaps(spans):
     """Удаляем перекрывающиеся spans, оставляя первый."""
     if not spans:
         return []
-    spans = sorted(spans, key=lambda x: x[0])
+    spans = sorted(spans, key=lambda x: (x[0], x[1]))
     result = [spans[0]]
     for curr in spans[1:]:
         if curr[0] >= result[-1][1]:

@@ -1,251 +1,270 @@
 import argparse
+import pandas as pd
 import ast
 import os
-import pandas as pd
+from pathlib import Path
 
-from src.prepare_data import read_train_dataset, read_test_dataset, save_processed
 from src.regex_detector import detect_pii
-from src.ner_model import train_ner, predict_dataframe
+from src.ner_model import NERModel
 from src.merge_predictions import merge_predictions
-from src.evaluate import compute_metrics, save_metrics
+from src.prepare_data import read_train_dataset, read_test_dataset
+from src.evaluate import compute_metrics
 from src.utils import ensure_dirs
 
-TRAIN_PATH = "data/raw/train_dataset.tsv"
-TEST_PATH = "data/raw/private_test_dataset.csv"
+ensure_dirs()
 
-REGEX_TRAIN_OUT = "data/answer/regex_train_predictions.csv"
-REGEX_TEST_OUT = "data/answer/regex_predictions.csv"
-
-NER_TRAIN_OUT = "data/answer/ner_train_predictions.csv"
-NER_TEST_OUT = "data/answer/ner_predictions.csv"
-
-MERGED_TRAIN_OUT = "data/answer/merged_train_predictions.csv"
-MERGED_TEST_OUT = "data/answer/merged_predictions.csv"
-
-METRICS_OUT = "data/answer/metrics.csv"
-
-
-def parse_prediction(value):
-    if pd.isna(value):
-        return []
-    value = str(value).strip()
-    if not value or value == "[]":
-        return []
-    try:
-        return ast.literal_eval(value)
-    except (ValueError, SyntaxError):
-        return []
-
-
-def run_regex_file(input_path: str, output_path: str):
-    print(f"Running regex on {input_path}...")
-    
-    if input_path.endswith(".tsv"):
-        df = read_train_dataset(input_path)
-    else:
-        df = read_test_dataset(input_path)
-
-    rows = []
-    for _, row in df.iterrows():
-        pred = detect_pii(row["text"])
-        item = {
-            "text": row["text"],
-            "prediction": str(pred),
-        }
-        if "id" in df.columns:
-            item["id"] = row["id"]
-        else:
-            item["row_id"] = row.get("row_id", _)
-
-        rows.append(item)
-
-    cols = ["id", "text", "prediction"] if "id" in df.columns else ["row_id", "text", "prediction"]
-    out_df = pd.DataFrame(rows)[cols]
-    out_df.to_csv(output_path, index=False)
-    print(f"Saved: {output_path}")
-    return out_df, df
-
-
-def run_ner_file(input_path: str, output_path: str):
-    print(f"Running NER on {input_path}...")
-    
-    if input_path.endswith(".tsv"):
-        df = read_train_dataset(input_path)
-    else:
-        df = read_test_dataset(input_path)
-
-    out_df = predict_dataframe(df)
-    out_df.to_csv(output_path, index=False)
-    print(f"Saved: {output_path}")
-    return out_df, df
-
-
-def run_merge(regex_path: str, ner_path: str, output_path: str):
-    print(f"Merging {regex_path} and {ner_path}...")
-    
-    regex_df = pd.read_csv(regex_path)
-    ner_df = pd.read_csv(ner_path)
-
-    if len(regex_df) != len(ner_df):
-        raise ValueError(
-            f"Different row counts: regex={len(regex_df)}, ner={len(ner_df)}"
-        )
-
-    key = "id" if "id" in regex_df.columns else "row_id"
-    
-    rows = []
-    for (_, r_row), (_, n_row) in zip(regex_df.iterrows(), ner_df.iterrows()):
-        regex_pred = parse_prediction(r_row["prediction"])
-        ner_pred = parse_prediction(n_row["prediction"])
-        merged = merge_predictions(regex_pred, ner_pred)
-
-        item = {
-            "text": r_row["text"],
-            "prediction": str(merged),
-        }
-        if key in regex_df.columns:
-            item[key] = r_row[key]
-        
-        rows.append(item)
-
-    cols = [key, "text", "prediction"] if key in regex_df.columns else ["text", "prediction"]
-    out_df = pd.DataFrame(rows)[cols]
-    out_df.to_csv(output_path, index=False)
-    print(f"Saved: {output_path}")
-    return out_df
-
-
-def append_metric(rows, model_name: str, dataset_name: str, pred_df: pd.DataFrame, gold_df: pd.DataFrame):
-    if "target" not in gold_df.columns:
-        print(f"  Skipping metrics for {model_name}/{dataset_name} (no target)")
-        return
-
-    preds = pred_df["prediction"].apply(parse_prediction).tolist()
-    targets = gold_df["target"].tolist()
-    metrics = compute_metrics(preds, targets)
-
-    rows.append(
-        {
-            "model": model_name,
-            "dataset": dataset_name,
-            "precision": round(metrics["precision"], 4),
-            "recall": round(metrics["recall"], 4),
-            "micro_f1": round(metrics["micro_f1"], 4),
-        }
-    )
-    
-    print(f"  {model_name}/{dataset_name}: F1={metrics['micro_f1']:.4f}")
-
-
-def prepare_command(_args):
-    ensure_dirs()
+def prepare_command(args):
+    """Копируем данные в папки (нет валидации на отдельной)."""
     print("Preparing data...")
-    train_df = read_train_dataset(TRAIN_PATH)
-    test_df = read_test_dataset(TEST_PATH)
-    print(f"Train: {len(train_df)}, Test: {len(test_df)}")
-
+    
+    # Копируем train и test
+    if os.path.exists("data/raw/train_dataset.tsv"):
+        train_df = read_train_dataset("data/raw/train_dataset.tsv")
+        train_df.to_csv("data/processed/train.csv", index=False)
+        print(f"Train: {len(train_df)} samples")
+    
+    if os.path.exists("data/raw/private_test_dataset.csv"):
+        test_df = read_test_dataset("data/raw/private_test_dataset.csv")
+        test_df.to_csv("data/processed/test.csv", index=False)
+        print(f"Test: {len(test_df)} samples")
 
 def regex_command(args):
-    ensure_dirs()
-    input_path = args.input
-    output_path = args.output
-    run_regex_file(input_path, output_path)
+    """Запуск regex детектора на test датасете."""
+    input_file = args.input or "data/processed/test.csv"
+    output_file = args.output or "data/answer/regex_predictions.csv"
+    
+    print(f"Running regex detector on {input_file}...")
+    
+    if not os.path.exists(input_file):
+        print(f"File not found: {input_file}")
+        return
+    
+    if input_file.endswith(".tsv"):
+        df = pd.read_csv(input_file, sep="\t", dtype=str)
+    else:
+        df = pd.read_csv(input_file, dtype=str)
+    
+    df["text"] = df["text"].astype(str)
+    predictions = []
+    
+    for text in df["text"]:
+        pred = detect_pii(text)
+        # Преобразуем список кортежей в строку для сохранения
+        predictions.append(pred)
+    
+    result_df = pd.DataFrame({
+        "prediction": predictions,
+    })
+    
+    if "id" in df.columns:
+        result_df.insert(0, "id", df["id"])
+    
+    result_df["text"] = df["text"]
+    
+    result_df.to_csv(output_file, index=False)
+    print(f"✓ Saved to {output_file}")
+    print(f"  Sample prediction: {predictions[0] if predictions else '[]'}")
+    
+    # Если есть target - показываем метрики
+    if "target" in df.columns:
+        targets = []
+        for t in df["target"]:
+            try:
+                if pd.isna(t) or t == "[]":
+                    targets.append([])
+                else:
+                    targets.append(ast.literal_eval(str(t)))
+            except:
+                targets.append([])
+        
+        metrics = compute_metrics(predictions, targets)
+        print(f"  Regex metrics: P={metrics['precision']:.4f}, R={metrics['recall']:.4f}, F1={metrics['micro_f1']:.4f}")
 
-
-def ner_train_command(_args):
-    ensure_dirs()
-    print("Training NER...")
-    train_df = read_train_dataset(TRAIN_PATH)
-    print(f"Training on {len(train_df)} samples")
-    train_ner(train_df, epochs=2, batch_size=8)
-    print("NER training complete")
-
+def ner_train_command(args):
+    """Обучение NER модели на всём train датасете."""
+    print("Training NER model...")
+    
+    if not os.path.exists("data/processed/train.csv"):
+        print("❌ Run 'python main.py prepare' first!")
+        return
+    
+    train_df = pd.read_csv("data/processed/train.csv", dtype=str)
+    
+    # Парсим target
+    def parse_target(t):
+        try:
+            if pd.isna(t) or t == "[]":
+                return []
+            return ast.literal_eval(str(t))
+        except:
+            return []
+    
+    train_df["target"] = train_df["target"].apply(parse_target)
+    
+    print(f"Training on {len(train_df)} samples...")
+    model = NERModel()
+    model.train(train_df, epochs=3, batch_size=8, max_len=512)
+    print("✓ NER model trained and saved")
 
 def ner_predict_command(args):
-    ensure_dirs()
-    run_ner_file(args.input, args.output)
-
-
-def merge_command(_args):
-    ensure_dirs()
-    run_merge(REGEX_TEST_OUT, NER_TEST_OUT, MERGED_TEST_OUT)
-
-
-def all_command(_args):
-    ensure_dirs()
-
-    print("=" * 60)
-    print("FULL PIPELINE")
-    print("=" * 60)
-
-    train_df = read_train_dataset(TRAIN_PATH)
-    test_df = read_test_dataset(TEST_PATH)
+    """Предсказание NER на test датасете."""
+    input_file = args.input or "data/processed/test.csv"
+    output_file = args.output or "data/answer/ner_predictions.csv"
     
-    print(f"\nDataset: train={len(train_df)}, test={len(test_df)}")
+    print(f"Running NER on {input_file}...")
+    
+    if not os.path.exists(input_file):
+        print(f"❌ File not found: {input_file}")
+        return
+    
+    df = pd.read_csv(input_file, dtype=str)
+    df["text"] = df["text"].astype(str)
+    
+    model = NERModel()
+    model.load()
+    
+    print(f"Predicting on {len(df)} texts...")
+    predictions = model.predict_batch(df["text"].tolist())
+    
+    result_df = pd.DataFrame({
+        "prediction": predictions,
+    })
+    
+    if "id" in df.columns:
+        result_df.insert(0, "id", df["id"])
+    
+    result_df["text"] = df["text"]
+    
+    result_df.to_csv(output_file, index=False)
+    print(f"✓ Saved to {output_file}")
+    print(f"  Sample prediction: {predictions[0] if predictions else '[]'}")
+    
+    # Если есть target - показываем метрики
+    if "target" in df.columns:
+        targets = []
+        for t in df["target"]:
+            try:
+                if pd.isna(t) or t == "[]":
+                    targets.append([])
+                else:
+                    targets.append(ast.literal_eval(str(t)))
+            except:
+                targets.append([])
+        
+        metrics = compute_metrics(predictions, targets)
+        print(f"  NER metrics: P={metrics['precision']:.4f}, R={metrics['recall']:.4f}, F1={metrics['micro_f1']:.4f}")
 
-    print("\n[1/6] Training NER...")
-    train_ner(train_df, epochs=2, batch_size=8)
+def merge_command(args):
+    """Merge regex и NER predictions."""
+    print("Merging regex and NER predictions...")
+    
+    regex_file = args.regex or "data/answer/regex_predictions.csv"
+    ner_file = args.ner or "data/answer/ner_predictions.csv"
+    output_file = args.output or "data/answer/merged_predictions.csv"
+    
+    if not os.path.exists(regex_file):
+        print(f"❌ File not found: {regex_file}")
+        return
+    
+    if not os.path.exists(ner_file):
+        print(f"❌ File not found: {ner_file}")
+        return
+    
+    regex_df = pd.read_csv(regex_file)
+    ner_df = pd.read_csv(ner_file)
+    
+    merged = []
+    
+    for i, (regex_pred, ner_pred) in enumerate(zip(regex_df["prediction"], ner_df["prediction"])):
+        # Парсим predictions
+        try:
+            if isinstance(regex_pred, str):
+                regex_spans = ast.literal_eval(regex_pred) if regex_pred and regex_pred != "[]" else []
+            else:
+                regex_spans = regex_pred if regex_pred else []
+        except:
+            regex_spans = []
+        
+        try:
+            if isinstance(ner_pred, str):
+                ner_spans = ast.literal_eval(ner_pred) if ner_pred and ner_pred != "[]" else []
+            else:
+                ner_spans = ner_pred if ner_pred else []
+        except:
+            ner_spans = []
+        
+        merged_spans = merge_predictions(regex_spans, ner_spans)
+        merged.append(merged_spans)
+    
+    result_df = pd.DataFrame({
+        "prediction": merged,
+    })
+    
+    if "id" in regex_df.columns:
+        result_df.insert(0, "id", regex_df["id"])
+    
+    result_df["text"] = regex_df["text"]
+    
+    result_df.to_csv(output_file, index=False)
+    print(f"✓ Saved to {output_file}")
+    print(f"  Sample merged: {merged[0] if merged else '[]'}")
 
-    print("\n[2/6] Regex on train...")
-    regex_train_df, gold_train_df = run_regex_file(TRAIN_PATH, REGEX_TRAIN_OUT)
-
-    print("\n[3/6] Regex on test...")
-    regex_test_df, _ = run_regex_file(TEST_PATH, REGEX_TEST_OUT)
-
-    print("\n[4/6] NER on train...")
-    ner_train_df, _ = run_ner_file(TRAIN_PATH, NER_TRAIN_OUT)
-
-    print("\n[5/6] NER on test...")
-    ner_test_df, _ = run_ner_file(TEST_PATH, NER_TEST_OUT)
-
-    print("\n[6/6] Merging...")
-    merged_train_df = run_merge(REGEX_TRAIN_OUT, NER_TRAIN_OUT, MERGED_TRAIN_OUT)
-    merged_test_df = run_merge(REGEX_TEST_OUT, NER_TEST_OUT, MERGED_TEST_OUT)
-
-    print("\n" + "=" * 60)
-    print("METRICS")
+def all_command(args):
+    """Полный pipeline: подготовка -> обучение -> предсказания -> merge."""
+    print("=" * 60)
+    print("Running full NER pipeline")
     print("=" * 60)
     
-    metric_rows = []
-    append_metric(metric_rows, "regex", "train", regex_train_df, gold_train_df)
-    append_metric(metric_rows, "ner", "train", ner_train_df, gold_train_df)
-    append_metric(metric_rows, "merge", "train", merged_train_df, gold_train_df)
-
-    if metric_rows:
-        save_metrics(metric_rows, METRICS_OUT)
-        print(f"\nSaved: {METRICS_OUT}")
-
+    print("\n[1/5] Preparing data...")
+    prepare_command(args)
+    
+    print("\n[2/5] Training NER model...")
+    ner_train_command(args)
+    
+    print("\n[3/5] Running regex detector...")
+    regex_command({**vars(args), "input": "data/processed/test.csv", "output": "data/answer/regex_predictions.csv"})
+    
+    print("\n[4/5] Running NER predictions...")
+    ner_predict_command({**vars(args), "input": "data/processed/test.csv", "output": "data/answer/ner_predictions.csv"})
+    
+    print("\n[5/5] Merging predictions...")
+    merge_command({**vars(args), "regex": "data/answer/regex_predictions.csv", "ner": "data/answer/ner_predictions.csv", "output": "data/answer/merged_predictions.csv"})
+    
     print("\n" + "=" * 60)
-    print("DONE")
+    print("✓ Pipeline completed!")
     print("=" * 60)
-
-
-def build_parser():
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command")
-
-    subparsers.add_parser("prepare")
-
-    p_regex = subparsers.add_parser("regex")
-    p_regex.add_argument("--input", required=True)
-    p_regex.add_argument("--output", required=True)
-
-    subparsers.add_parser("ner_train")
-
-    p_ner_pred = subparsers.add_parser("ner_predict")
-    p_ner_pred.add_argument("--input", required=True)
-    p_ner_pred.add_argument("--output", required=True)
-
-    subparsers.add_parser("merge")
-    subparsers.add_parser("all")
-
-    return parser
-
 
 if __name__ == "__main__":
-    parser = build_parser()
+    parser = argparse.ArgumentParser(description="NER Pipeline for Russian PII detection")
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
+    
+    # Prepare
+    subparsers.add_parser("prepare", help="Prepare data")
+    
+    # Regex
+    regex_parser = subparsers.add_parser("regex", help="Run regex detector")
+    regex_parser.add_argument("--input", default=None, help="Input file path")
+    regex_parser.add_argument("--output", default=None, help="Output file path")
+    
+    # NER train
+    subparsers.add_parser("ner_train", help="Train NER model")
+    
+    # NER predict
+    ner_pred_parser = subparsers.add_parser("ner_predict", help="Run NER prediction")
+    ner_pred_parser.add_argument("--input", default=None, help="Input file path")
+    ner_pred_parser.add_argument("--output", default=None, help="Output file path")
+    
+    # Merge
+    merge_parser = subparsers.add_parser("merge", help="Merge regex and NER predictions")
+    merge_parser.add_argument("--regex", default=None, help="Regex predictions file")
+    merge_parser.add_argument("--ner", default=None, help="NER predictions file")
+    merge_parser.add_argument("--output", default=None, help="Output file path")
+    
+    # All
+    subparsers.add_parser("all", help="Run full pipeline")
+    
     args = parser.parse_args()
-
+    
     if args.command == "prepare":
         prepare_command(args)
     elif args.command == "regex":

@@ -31,5 +31,15 @@ LABELS = [
     "ФИО",
 ]
 
-LABEL2ID = {label: idx for idx, label in enumerate(LABELS)}
-ID2LABEL = {idx: label for idx, label in enumerate(LABELS)}
+# BIO теги: O, B-label, I-label
+# Индекс 0 - это "O" (not entity)
+LABEL2ID = {"O": 0}
+for idx, label in enumerate(LABELS, start=1):
+    LABEL2ID[f"B-{label}"] = idx * 2 - 1
+    LABEL2ID[f"I-{label}"] = idx * 2
+
+ID2LABEL = {v: k for k, v in LABEL2ID.items()}
+
+# Для простого преобразования entity->id
+ENTITY_LABEL2ID = {label: idx for idx, label in enumerate(LABELS)}
+ENTITY_ID2LABEL = {idx: label for idx, label in enumerate(LABELS)}

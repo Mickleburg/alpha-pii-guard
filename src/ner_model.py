@@ -1,249 +1,147 @@
-import os
-import random
-from typing import List, Tuple
-
+import torch
 import numpy as np
 import pandas as pd
-import torch
+from transformers import AutoTokenizer, AutoModelForTokenClassification, Trainer, TrainingArguments
 from torch.utils.data import Dataset
-from transformers import (
-    AutoModelForTokenClassification,
-    AutoTokenizer,
-    Trainer,
-    TrainingArguments,
-)
+from typing import List, Tuple
+from tqdm import tqdm
+import os
 
-from src.labels import LABELS
-from src.prepare_data import spans_to_bio_by_offsets
+from src.labels import LABEL2ID, ID2LABEL, LABELS
+from src.prepare_data import spans_to_bio_tags
+from src.utils import bio_to_spans
 
-MODEL_NAME = "cointegrated/rubert-tiny2"
-MODEL_DIR = "data/processed/ner_model"
-MAX_LENGTH = 256
-SEED = 42
-
-
-def set_seed(seed: int = SEED):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-BIO_LABELS = ["O"]
-for label in LABELS:
-    BIO_LABELS.append(f"B-{label}")
-    BIO_LABELS.append(f"I-{label}")
-
-TAG2ID = {tag: i for i, tag in enumerate(BIO_LABELS)}
-ID2TAG = {i: tag for tag, i in TAG2ID.items()}
-
-
-class TokenDataset(Dataset):
-    def __init__(self, texts: List[str], targets: List[List[Tuple[int, int, str]]], tokenizer, max_len=MAX_LENGTH):
-        self.items = []
+class NERDataset(Dataset):
+    def __init__(self, texts: List[str], spans: List[List[Tuple[int, int, str]]], tokenizer, max_len=512):
+        self.texts = texts
+        self.spans = spans
         self.tokenizer = tokenizer
         self.max_len = max_len
-
-        for text, spans in zip(texts, targets):
-            enc = tokenizer(
+        self.encodings = []
+        self._prepare()
+    
+    def _prepare(self):
+        for text, span_list in zip(self.texts, self.spans):
+            bio_tags = spans_to_bio_tags(text, span_list)
+            
+            encoding = self.tokenizer(
                 text,
                 truncation=True,
+                max_length=self.max_len,
                 padding="max_length",
-                max_length=max_len,
                 return_offsets_mapping=True,
             )
-
-            offset_mapping = enc["offset_mapping"]
-            bio_tags = spans_to_bio_by_offsets(offset_mapping, spans)
             
             labels = []
-            for tag in bio_tags:
-                labels.append(TAG2ID.get(tag, TAG2ID["O"]))
-
-            self.items.append(
-                {
-                    "input_ids": torch.tensor(enc["input_ids"], dtype=torch.long),
-                    "attention_mask": torch.tensor(enc["attention_mask"], dtype=torch.long),
-                    "labels": torch.tensor(labels, dtype=torch.long),
-                }
-            )
-
+            for i, offset in enumerate(encoding["offset_mapping"]):
+                if offset[0] == offset[1]:
+                    # Специальный токен
+                    labels.append(-100)
+                else:
+                    char_idx = offset[0]
+                    if char_idx < len(bio_tags):
+                        tag = bio_tags[char_idx]
+                        labels.append(LABEL2ID.get(tag, LABEL2ID.get("O", 0)))
+                    else:
+                        labels.append(LABEL2ID.get("O", 0))
+            
+            encoding["labels"] = labels
+            del encoding["offset_mapping"]
+            self.encodings.append(encoding)
+    
     def __len__(self):
-        return len(self.items)
-
+        return len(self.encodings)
+    
     def __getitem__(self, idx):
-        return self.items[idx]
-
-
-def build_model():
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModelForTokenClassification.from_pretrained(
-        MODEL_NAME,
-        num_labels=len(BIO_LABELS),
-        id2label=ID2TAG,
-        label2id=TAG2ID,
-    )
-    return tokenizer, model
-
-
-def train_ner(train_df: pd.DataFrame, epochs: int = 2, batch_size: int = 8):
-    """Обучаем NER на ВСЕ тренировочные данные."""
-    set_seed(SEED)
-    tokenizer, model = build_model()
-
-    print(f"Building dataset with {len(train_df)} samples...")
-    dataset = TokenDataset(
-        texts=train_df["text"].tolist(),
-        targets=train_df["target"].tolist(),
-        tokenizer=tokenizer,
-        max_len=MAX_LENGTH,
-    )
-    print(f"Dataset built: {len(dataset)} items")
-
-    training_args = TrainingArguments(
-        output_dir=MODEL_DIR,
-        overwrite_output_dir=True,
-        num_train_epochs=epochs,
-        per_device_train_batch_size=batch_size,
-        learning_rate=3e-5,
-        weight_decay=0.01,
-        logging_steps=100,
-        save_strategy="epoch",
-        eval_strategy="no",
-        do_eval=False,
-        report_to="none",
-        fp16=torch.cuda.is_available(),
-        remove_unused_columns=False,
-        seed=SEED,
-    )
-
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=dataset,
-        tokenizer=tokenizer,
-    )
-
-    trainer.train()
-    trainer.save_model(MODEL_DIR)
-    tokenizer.save_pretrained(MODEL_DIR)
-
-
-def load_ner():
-    """Загружаем обученную модель."""
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
-    model = AutoModelForTokenClassification.from_pretrained(MODEL_DIR)
-    model.eval()
-    if torch.cuda.is_available():
-        model.cuda()
-    return tokenizer, model
-
-
-def clean_spans(spans: List[Tuple[int, int, str]]) -> List[Tuple[int, int, str]]:
-    """Удаляем инвалидные и перекрывающиеся spans."""
-    spans = sorted(spans, key=lambda x: (x[0], x[1]))
-    result = []
-    
-    for start, end, label in spans:
-        if start >= end:
-            continue
-        
-        if result and start < result[-1][1]:
-            continue
-        
-        result.append((start, end, label))
-    
-    return result
-
-
-def predict_one(text: str, tokenizer, model) -> List[Tuple[int, int, str]]:
-    """Предсказываем сущности для одного текста в формате [(start, end, label), ...]."""
-    enc = tokenizer(
-        text,
-        truncation=True,
-        padding="max_length",
-        max_length=MAX_LENGTH,
-        return_offsets_mapping=True,
-        return_tensors="pt",
-    )
-
-    offset_mapping = enc.pop("offset_mapping")[0].tolist()
-
-    if torch.cuda.is_available():
-        enc = {k: v.cuda() for k, v in enc.items()}
-
-    with torch.no_grad():
-        logits = model(**enc).logits[0].detach().cpu().numpy()
-
-    pred_ids = np.argmax(logits, axis=-1)
-    pred_tags = [ID2TAG.get(int(i), "O") for i in pred_ids]
-
-    spans = []
-    current_start = None
-    current_end = None
-    current_label = None
-
-    for tag, (start, end) in zip(pred_tags, offset_mapping):
-        if start == end:
-            if current_label is not None:
-                spans.append((current_start, current_end, current_label))
-                current_start, current_end, current_label = None, None, None
-            continue
-
-        if tag == "O":
-            if current_label is not None:
-                spans.append((current_start, current_end, current_label))
-                current_start, current_end, current_label = None, None, None
-            continue
-
-        if "-" not in tag:
-            if current_label is not None:
-                spans.append((current_start, current_end, current_label))
-            current_start, current_end, current_label = None, None, None
-            continue
-
-        prefix, label = tag.split("-", 1)
-
-        if prefix == "B":
-            if current_label is not None:
-                spans.append((current_start, current_end, current_label))
-            current_start, current_end, current_label = start, end, label
-
-        elif prefix == "I":
-            if current_label == label and current_start is not None:
-                current_end = end
-            else:
-                if current_label is not None:
-                    spans.append((current_start, current_end, current_label))
-                current_start, current_end, current_label = start, end, label
-
-    if current_label is not None:
-        spans.append((current_start, current_end, current_label))
-
-    return clean_spans(spans)
-
-
-def predict_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Предсказываем для датасета и возвращаем в формате [(start, end, label), ...]."""
-    tokenizer, model = load_ner()
-    rows = []
-
-    for idx, row in df.iterrows():
-        text = row["text"]
-        prediction = predict_one(text, tokenizer, model)
-
-        out = {
-            "text": text,
-            "prediction": str(prediction),
+        enc = self.encodings[idx]
+        return {
+            "input_ids": torch.tensor(enc["input_ids"]),
+            "attention_mask": torch.tensor(enc["attention_mask"]),
+            "labels": torch.tensor(enc["labels"]),
         }
 
-        if "id" in df.columns:
-            out["id"] = row["id"]
+class NERModel:
+    def __init__(self, model_name="cointegrated/rubert-tiny2", output_dir="ner_model"):
+        self.model_name = model_name
+        self.output_dir = output_dir
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        # Всего меток: O + B-label и I-label для каждого из 30 лейблов
+        num_labels = len(LABEL2ID)
+        self.model = AutoModelForTokenClassification.from_pretrained(
+            model_name, num_labels=num_labels
+        )
+    
+    def train(self, train_df, epochs=3, batch_size=8, max_len=512):
+        """Обучаем модель на всём train датасете (без валидации)."""
+        train_dataset = NERDataset(
+            train_df["text"].tolist(),
+            train_df["target"].tolist(),
+            self.tokenizer,
+            max_len=max_len,
+        )
+        
+        training_args = TrainingArguments(
+            output_dir=self.output_dir,
+            num_train_epochs=epochs,
+            per_device_train_batch_size=batch_size,
+            save_steps=100,
+            save_total_limit=2,
+            logging_steps=50,
+            seed=42,
+            learning_rate=2e-5,
+            weight_decay=0.01,
+        )
+        
+        trainer = Trainer(
+            model=self.model,
+            args=training_args,
+            train_dataset=train_dataset,
+        )
+        
+        trainer.train()
+        self.model.save_pretrained(self.output_dir)
+        self.tokenizer.save_pretrained(self.output_dir)
+    
+    def predict_text(self, text: str, max_len=512) -> List[Tuple[int, int, str]]:
+        """Предсказываем на одном тексте. Возвращаем список кортежей (start, end, label)."""
+        encoding = self.tokenizer(
+            text,
+            truncation=True,
+            max_length=max_len,
+            return_offsets_mapping=True,
+            return_tensors="pt",
+        )
+        
+        offset_mapping = encoding.pop("offset_mapping")[0].numpy()
+        
+        with torch.no_grad():
+            outputs = self.model(**encoding)
+            logits = outputs.logits[0].cpu().numpy()
+        
+        pred_labels = np.argmax(logits, axis=1)
+        
+        # Преобразуем ID в BIO-теги
+        bio_tags = []
+        for pred_id in pred_labels:
+            tag = ID2LABEL.get(pred_id, "O")
+            bio_tags.append(tag)
+        
+        # Преобразуем BIO-теги в spans
+        spans = bio_to_spans(text, bio_tags)
+        return sorted(spans, key=lambda x: x[0])
+    
+    def predict_batch(self, texts: List[str]) -> List[List[Tuple[int, int, str]]]:
+        """Предсказываем на батче текстов. Возвращаем список списков кортежей."""
+        predictions = []
+        for text in tqdm(texts, desc="NER prediction"):
+            pred = self.predict_text(text)
+            predictions.append(pred)
+        return predictions
+    
+    def load(self):
+        """Загружаем модель с диска."""
+        if os.path.exists(self.output_dir):
+            self.model = AutoModelForTokenClassification.from_pretrained(self.output_dir)
+            self.tokenizer = AutoTokenizer.from_pretrained(self.output_dir)
         else:
-            out["row_id"] = row.get("row_id", idx)
-
-        rows.append(out)
-
-    cols = ["id", "text", "prediction"] if "id" in df.columns else ["row_id", "text", "prediction"]
-    return pd.DataFrame(rows)[cols]
+            raise FileNotFoundError(f"Model not found at {self.output_dir}")
