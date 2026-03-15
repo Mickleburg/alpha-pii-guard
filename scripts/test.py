@@ -1,30 +1,26 @@
-# Ячейка для тестирования модели на новых данных (CSV с колонкой 'text')
 import pandas as pd
 import torch
-import numpy as np
 from transformers import AutoTokenizer, AutoModelForTokenClassification
 
 # ------------------------------
-# 1. Загружаем сохранённую модель и токенизатор
+# Загрузка обученной модели
 # ------------------------------
-model_path = './ner_model_final'  # путь к папке с моделью
+model_path = './ner_model_final'  # путь к сохранённой модели
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 model = AutoModelForTokenClassification.from_pretrained(model_path)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model.to(device)
 model.eval()
 
-# Из модели получаем словарь id -> label
-id2label = model.config.id2label
+id2label = model.config.id2label  # словарь для преобразования ID меток в строковые категории
 
 # ------------------------------
-# 2. Функция преобразования предсказаний в спаны (аналогично обучению)
+# Функция преобразования предсказаний в спаны
 # ------------------------------
 def spans_from_labels(labels, offset_mapping, id2label):
     """
-    labels: список предсказанных ID меток для токенов (только значимые токены, без специальных)
+    labels: список ID предсказанных меток (только для значимых токенов)
     offset_mapping: список кортежей (start, end) для тех же токенов
-    id2label: словарь id -> label_str
     """
     entities = []
     i = 0
@@ -48,15 +44,13 @@ def spans_from_labels(labels, offset_mapping, id2label):
             entities.append((int(start_offset), int(end_offset), cat))
             i = j
         else:
-            # I- без B – такого не должно быть, но на всякий случай пропускаем
             i += 1
     return entities
 
 # ------------------------------
-# 3. Функция обработки одного текста
+# Функция предсказания для одного текста
 # ------------------------------
 def predict_entities(text, tokenizer, model, id2label, max_length=512):
-    # Токенизация с offset_mapping
     inputs = tokenizer(
         text,
         truncation=True,
@@ -64,48 +58,55 @@ def predict_entities(text, tokenizer, model, id2label, max_length=512):
         return_offsets_mapping=True,
         return_tensors='pt'
     )
-    # Перемещаем на устройство
     input_ids = inputs['input_ids'].to(device)
     attention_mask = inputs['attention_mask'].to(device)
-    offset_mapping = inputs['offset_mapping'][0].cpu().numpy()  # список кортежей (start, end)
+    offset_mapping = inputs['offset_mapping'][0].cpu().numpy()
 
     with torch.no_grad():
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-        logits = outputs.logits
+        logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
         predictions = torch.argmax(logits, dim=-1)[0].cpu().numpy()
 
-    # Отфильтровываем специальные токены (где offset_mapping == (0,0) или (None,None))
-    # и токены паддинга (attention_mask=0). Используем attention_mask.
+    # Фильтруем специальные токены и паддинг
     mask = attention_mask[0].cpu().numpy().astype(bool)
-    # Также исключаем токены с нулевым смещением (специальные)
     valid_indices = [i for i, (start, end) in enumerate(offset_mapping) if mask[i] and not (start == 0 and end == 0)]
     if not valid_indices:
         return []
 
     pred_labels = predictions[valid_indices]
     valid_offsets = [offset_mapping[i] for i in valid_indices]
-
-    # Преобразуем в спаны
-    entities = spans_from_labels(pred_labels, valid_offsets, id2label)
-    return entities
+    return spans_from_labels(pred_labels, valid_offsets, id2label)
 
 # ------------------------------
-# 4. Загрузка CSV с текстами
+# Загрузка входного CSV (должен содержать колонки 'id_text' и 'text')
 # ------------------------------
-# Предположим, что файл называется 'input.csv' и содержит колонку 'text'.
-# Если есть колонка 'id', она будет сохранена.
-df_input = pd.read_csv('input.csv')  # укажите ваш путь
+df_input = pd.read_csv('input.csv')  # укажите имя вашего файла
 
-# Применяем функцию к каждому тексту
+# Убедимся, что колонка с текстом называется 'text', если нет – скорректируйте
+# Если в файле колонка называется 'id_text' и 'text', то всё хорошо
+if 'text' not in df_input.columns:
+    # возможно колонка называется по-другому, например 'Текст'
+    # тогда нужно её переименовать
+    pass  # подстройте под ваш файл
+
+# Применяем модель к каждому тексту
 df_input['entities'] = df_input['text'].apply(lambda x: predict_entities(x, tokenizer, model, id2label))
 
-# Выводим результат на экран
-for idx, row in df_input.iterrows():
-    print(f"Текст: {row['text'][:80]}...")  # обрезаем для вывода
-    print(f"Найденные сущности: {row['entities']}")
-    print("-" * 80)
+# ------------------------------
+# Формируем выходной DataFrame с колонками 'id' и 'Prediction'
+# ------------------------------
+# Если есть колонка 'id_text', используем её как id
+if 'id_text' in df_input.columns:
+    df_output = pd.DataFrame({
+        'id': df_input['id_text'],
+        'Prediction': df_input['entities']
+    })
+else:
+    # иначе используем индекс строки (начиная с 0)
+    df_output = pd.DataFrame({
+        'id': range(len(df_input)),
+        'Prediction': df_input['entities']
+    })
 
-# Если нужно сохранить результат в новый CSV
-df_output = df_input[['text', 'entities']]  # или добавьте 'id'
-df_output.to_csv('output_with_entities.csv', index=False)
-print("Результат сохранён в output_with_entities.csv")
+# Сохраняем результат
+df_output.to_csv('output_predictions.csv', index=False)
+print("Результат сохранён в output_predictions.csv")
