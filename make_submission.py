@@ -1,11 +1,12 @@
 import argparse
 import ast
 import os
+from typing import List, Tuple, Any
 
 import pandas as pd
 
 
-def parse_prediction(value):
+def parse_prediction(value: Any) -> List[Tuple[int, int, str]]:
     """
     Безопасно парсим prediction из CSV.
     Ожидаем строку вида:
@@ -30,7 +31,7 @@ def parse_prediction(value):
         return []
 
 
-def normalize_spans(spans):
+def normalize_spans(spans: List[Any]) -> List[Tuple[int, int, str]]:
     """
     Нормализуем spans к формату:
     [(start, end, label), ...]
@@ -55,35 +56,55 @@ def normalize_spans(spans):
 
         result.append((start, end, label))
 
-    result = sorted(set(result), key=lambda x: (x[0], x[1], x[2]))
-    return result
+    return sorted(set(result), key=lambda x: (x[0], x[1], x[2]))
 
 
-def build_submission(input_path: str, output_path: str):
+def detect_prediction_column(df: pd.DataFrame) -> str:
+    """
+    Ищем колонку с предсказаниями.
+    Поддерживаем и 'prediction', и 'Prediction'.
+    """
+    if "prediction" in df.columns:
+        return "prediction"
+    if "Prediction" in df.columns:
+        return "Prediction"
+    raise ValueError("Input CSV must contain 'prediction' or 'Prediction' column")
+
+
+def build_submission(input_path: str, output_path: str | None = None) -> str:
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
     df = pd.read_csv(input_path, dtype=str)
 
-    if "prediction" not in df.columns:
-        raise ValueError("Input CSV must contain 'prediction' column")
+    pred_col = detect_prediction_column(df)
 
     predictions = []
-    for value in df["prediction"]:
+    for value in df[pred_col]:
         spans = parse_prediction(value)
         spans = normalize_spans(spans)
         predictions.append(str(spans))
 
+    if "id" in df.columns:
+        ids = df["id"]
+    else:
+        ids = pd.Series(range(len(df)), name="id")
+
     submission = pd.DataFrame({
-        "prediction": predictions
+        "id": ids,
+        "Prediction": predictions,
     })
 
-    if "id" in df.columns:
-        submission.insert(0, "id", df["id"])
-    else:
-        submission.insert(0, "id", range(len(submission)))
+    if output_path is None:
+        input_dir = os.path.dirname(input_path) or "."
+        output_path = os.path.join(input_dir, "submissions.csv")
 
-    submission.to_csv(output_path, index=False)
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    submission.to_csv(output_path, index=False, encoding="utf-8")
+
     print(f"Submission saved to: {output_path}")
     print(f"Rows: {len(submission)}")
 
@@ -91,19 +112,25 @@ def build_submission(input_path: str, output_path: str):
         print("Sample row:")
         print(submission.iloc[0].to_dict())
 
+    return output_path
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Build final submission file")
-    parser.add_argument(
-        "--input",
-        default="data/answer/merged_predictions.csv",
-        help="Path to predictions CSV"
+    parser = argparse.ArgumentParser(
+        description="Build submissions.csv in expected format: id,Prediction"
     )
+
     parser.add_argument(
+        "input_path",
+        help="Path to input predictions CSV"
+    )
+
+    parser.add_argument(
+        "-o",
         "--output",
-        default="data/answer/submission.csv",
-        help="Path to save submission CSV"
+        default=None,
+        help="Path to output submissions.csv (default: next to input file)"
     )
 
     args = parser.parse_args()
-    build_submission(args.input, args.output)
+    build_submission(args.input_path, args.output)
